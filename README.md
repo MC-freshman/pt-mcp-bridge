@@ -42,14 +42,24 @@ PT 侧的载体是 **Script Module**——PT 自带的扩展机制，JS 跑在 P
 
 PT 的用户数据目录在 `%USERPROFILE%\Cisco Packet Tracer 8.0\`，模块落它的 `extensions\`，**明文 GBK 日志**落 `logs\*.log`——里面逐条记录了每一条设备 CLI 命令，是排查和留痕的免费通道。
 
-### 2. 改 4 个常量适配你的机器
+### 2. 适配你的机器
+
+Python 侧走环境变量，不用改代码：
+
+| 环境变量 | 默认值 | 作用 |
+|---|---|---|
+| `PT_BRIDGE_DIR` | `C:\pt_bridge` | 桥目录（`cmd.txt`/`resp.txt`/`log.txt`/`alive.txt` 所在处） |
+| `PT_BRIDGE_TOKEN` | `CHANGE_ME` | 与 PT 侧模块的口令配对 |
+
+JS 侧**必须手改三处**——PT 的 QtScript 引擎读不到环境变量，这是它的硬限制：
 
 | 文件 | 常量 | 说明 |
 |---|---|---|
-| `bridge/bridge_module.js` | `CFG.bridge` | 桥目录，**建议纯 ASCII 路径**（避开 PT 文件接口和 Python 的中文路径坑） |
-| `bridge/bridge_module.js` | `CFG.token` | 见下方安全警告，公开前改掉 |
-| `ptctl.py` | `BRIDGE` / `TOKEN` | 必须和上面两个一致 |
+| `bridge/bridge_module.js` | `CFG.bridge` | 要和 `PT_BRIDGE_DIR` 指到同一个目录 |
+| `bridge/bridge_module.js` | `CFG.token` | 要和 `PT_BRIDGE_TOKEN` 一致，不一致时模块会回 `bad token` 并拒绝执行 |
 | `bridge/module_entry.js` | `#include` 的路径 | 指向 `bridge_module.js` 的绝对路径 |
+
+桥目录**建议用纯 ASCII、不带空格**的路径：PT 的文件接口和 Python 在中文路径上都有已知的坑。
 
 ### 3. 注册进 MCP 客户端
 
@@ -160,10 +170,10 @@ PT实测API表.md         全部实测结论
 这条桥的语义是：**本机任何进程往 `cmd.txt` 写一下，就能在 Packet Tracer 进程里执行任意 JavaScript**。
 
 - `CFG.token` 只能挡住误投和其它工具乱写，**挡不住同一用户的其它进程**（口令就存在该用户的目录里）。
+- 仓库里发的是占位符 `CHANGE_ME`：**上手第一件事**是把它换成你自己的随机串（JS 侧一处 + `PT_BRIDGE_TOKEN` 一处）。不改就直接用 `CHANGE_ME` 的话，任何本机进程知道这个默认值就能驱动 PT。
 - 别把桥目录放进共享目录或网盘。
-- 公开或复用本仓库前，改掉两处 `token`/`TOKEN` 的字面值。
 - 桥目录建议保持纯 ASCII 绝对路径，且不要带空格。
 
 ## License
 
-暂未添加 LICENSE 文件。
+MIT —— 见 [LICENSE](LICENSE)。逆向得到的 API 结论本身不受版权保护，但请注意 Packet Tracer 是 Cisco 的闭源软件，本仓库不含它的任何二进制或文件。

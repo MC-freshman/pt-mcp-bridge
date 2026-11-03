@@ -7,8 +7,8 @@
    ============================================================ */
 
 var CFG = {
-    bridge: "C:/Users/wk/pt_bridge",
-    token:  "ptb-7c1f4d9a2e6b",
+    bridge: "C:/pt_bridge",
+    token:  "CHANGE_ME",
     pollMs: 400,
     write:  "p2"       // 实测唯一干净的签名 = writePlainTextToFile(path, text)；"auto" 会选中乱码的 t2
 };

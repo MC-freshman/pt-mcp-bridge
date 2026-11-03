@@ -1,7 +1,9 @@
 """5 参形式已对，换真实线型名试，找出能建成的那个。"""
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\wk\pt_bridge")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  ".." if "probes" in __file__ else "."))
 import ptctl
 
 LW = 'ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()'

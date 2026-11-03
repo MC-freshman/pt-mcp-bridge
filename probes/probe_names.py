@@ -1,7 +1,9 @@
 """用 typeof 批量探方法存在性，找出创建连线的入口。"""
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\wk\pt_bridge")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  ".." if "probes" in __file__ else "."))
 import ptctl
 
 T = 'String(typeof %s)'

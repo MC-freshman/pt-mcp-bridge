@@ -1,9 +1,10 @@
 """隔着真实 PT 驱动 pt_mcp.py，验整条链：MCP -> 文件队列 -> PT 脚本引擎 -> 设备 CLI。"""
 import json
 import subprocess
+import os
 import sys
 
-p = subprocess.Popen([sys.executable, r"C:\Users\wk\pt_bridge\pt_mcp.py"],
+p = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pt_mcp.py")],
                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                      stderr=subprocess.PIPE, text=True, encoding="utf-8")
 

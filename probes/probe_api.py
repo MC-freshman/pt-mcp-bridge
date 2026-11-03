@@ -1,7 +1,9 @@
 """探测 PT 的连线/端口/设备 API 实际存在哪些方法（不存在会抛异常，逐条记录）。"""
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\wk\pt_bridge")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  ".." if "probes" in __file__ else "."))
 import ptctl
 
 # 注意：包装串里不要再放引号嵌套，之前把 " " 吃掉导致 JS 语法错

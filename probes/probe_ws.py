@@ -1,7 +1,9 @@
 """验 LogicalWorkspace 能不能拿到，以及 createLink/addDevice 的真实签名。"""
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\wk\pt_bridge")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  ".." if "probes" in __file__ else "."))
 import ptctl
 
 W = ('(function(){try{var v=%s;return "OK:"+String(v).slice(0,70)}'

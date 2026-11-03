@@ -1,6 +1,6 @@
 # Packet Tracer 8.0 脚本模块 API 实测表
 
-本机实测来源：`E:\XDUSTUDY\网络与协议安全\PacketTracer 8.0\Cisco Packet Tracer 8.0\bin\PacketTracer.exe`
+本机实测来源：`<PT 安装目录>\bin\PacketTracer.exe`
 （8.0.0.0212，补丁版免登录）+ 随包 `help\default\*.htm` + 桥模块实跑。
 每条都标了"实测"还是"文档说的"。**别再凭名字猜。**
 
@@ -15,8 +15,8 @@
 | 权限授予 | `General` 页 Security 11 格勾满，且必须走完上面的生效链。实测默认只落进 `Application` + `IPC` 两档 |
 | 权限枚举真名 | `APPLICATION` `GET_NETWORK_INFO` `CHANGE_NETWORK_INFO` `SIMULATION_MODE` `MISC_GUI` `CHANGE_PREFERENCES` `CHANGE_GUI` `ACTIVITY_WIZARD` `MULTIUSER`（9 个，**没有文件权限这一档**） |
 | 运行中改代码 | 不生效，必须 Stop→Start |
-| 模块存哪 | 用户数据树 `C:\Users\wk\Cisco Packet Tracer 8.0\extensions\`，`PT.conf` 加密，`.pts` 也加密（搜不到任何明文片段） |
-| PT 自己的日志 | `C:\Users\wk\Cisco Packet Tracer 8.0\logs\*.log`，**GBK 编码**，明文记录模块起停和**每一条设备 CLI 命令**（`Router1: router1# ...`），可当崩溃判据和命令留痕 |
+| 模块存哪 | 用户数据树 `%USERPROFILE%\Cisco Packet Tracer 8.0\extensions\`，`PT.conf` 加密，`.pts` 也加密（搜不到任何明文片段） |
+| PT 自己的日志 | `%USERPROFILE%\Cisco Packet Tracer 8.0\logs\*.log`，**GBK 编码**，明文记录模块起停和**每一条设备 CLI 命令**（`Router1: router1# ...`），可当崩溃判据和命令留痕 |
 
 ## 二、输出通道（踩出来的）
 

@@ -18,7 +18,7 @@ import os
 import subprocess
 import sys
 
-sys.path.insert(0, r"C:\Users\wk\pt_bridge")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ptctl
 import ptplus
 

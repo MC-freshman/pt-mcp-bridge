@@ -1,9 +1,11 @@
 """离线自测：不向 PT 发任何命令。只测纯逻辑 + JSON-RPC 握手 + tools/list。"""
 import json
 import subprocess
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\wk\pt_bridge")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  ".." if "probes" in __file__ else "."))
 import ptplus
 
 print("== classify 五分类 ==")
@@ -49,7 +51,7 @@ print("  缺项:", json.dumps(ptplus.check_expect(cfg, ["vpdn enable"], [])))
 
 print()
 print("== MCP 握手 + tools/list（不碰 PT）==")
-proc = subprocess.Popen([sys.executable, r"C:\Users\wk\pt_bridge\pt_mcp.py"],
+proc = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pt_mcp.py")],
                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE, text=True, encoding="utf-8")
 for m in [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},

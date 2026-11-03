@@ -17,11 +17,11 @@ import re
 import sys
 import time
 
-BRIDGE = r"C:\Users\wk\pt_bridge"
+BRIDGE = os.environ.get("PT_BRIDGE_DIR", r"C:\pt_bridge")
 CMD = os.path.join(BRIDGE, "cmd.txt")
 RESP = os.path.join(BRIDGE, "resp.txt")
 ALIVE = os.path.join(BRIDGE, "alive.txt")
-TOKEN = "ptb-7c1f4d9a2e6b"
+TOKEN = os.environ.get("PT_BRIDGE_TOKEN", "CHANGE_ME")
 FILES = ["cmd.txt", "resp.txt", "alive.txt", "inbox.txt",
          "t_t2.txt", "t_t3.txt", "t_p2.txt", "t_p3.txt", "t_b.txt",
          "r_t2.txt", "r_t3.txt", "r_p2.txt", "r_p3.txt", "r_b.txt"]
