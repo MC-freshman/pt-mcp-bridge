@@ -55,18 +55,70 @@ dev.getModel()                                    // 返回 "1841"
 ipc.options() / ipc.multiUserManager() / ipc.hardwareFactory()   // 对象能拿到，但方法名没探全
 ```
 
-## 四、不可用 / 会出事（GUI-only 清单）
+## 四、能力边界（2026-11-04 用官方在线文档纠正）
 
-| 想做的事 | 为什么不行 | 只能怎么办 |
+官方 Doxygen 文档：<https://tutorials.ptnetacad.net/help/default/IpcAPI/>
+**先查文档再猜。** 我最初只靠 exe 字符串表 + `typeof` 扫描，把三个枚举的基值全猜错，
+导致"放设备 / 连线 / 改位置"被误判成"做不到"，还在公开 README 里挂了一版。
+
+### 能编程完成（实测）
+
+| 事项 | 签名 | 实测记录 |
 |---|---|---|
-| **连线** | `createLink(p,p,线型,int,int)` 被接受但**恒返回 false**（9 种线型名都一样）；`autoConnectDevices(d,d)` 静默无效；`connectLink`/`addLink`/`connect` 在 `network()` 上不存在 | GUI 闪电图标手连 |
-| **插模块** | `addModule` 7 种参数形式全 `Invalid arguments`；`removeModule` 同样进不去 | Physical 页断电→拖模块→通电 |
-| **存盘** | `appWindow.save/saveAs`、`network.saveFile`、`ipcManager.save`、`systemFileManager.saveFile` 等 12 个入口全 undefined | `Ctrl+S` |
-| **AAA Server 用户/client 表** | `addAAAClient`/`addAAAUser` 只是 GUI 控件槽函数名；`getProcess("RadiusServerProcess")` 上只有 `getPort`/`setPort` | Services→AAA 面板手填 |
-| **Logical 视图设备坐标** | `getCanvasItemIds()` 返回空、`getCanvasItemX(uuid)` 返回哨兵 `-9999999`；这组 API 是配 Physical 视图（机柜/楼宇）的 | 手拖 |
-| **`AssessmentModel.getRunningConfig`** | **直接把 PT 进程搞崩**（实测换 PID） | 用 `consoleLine.enterCommand("show running-config")` + 翻页替代 |
-| **`enterChar(...)`** | 字符串和数字两种形态都 `Invalid arguments` | 翻页用 `enterCommand(" ")` |
-| **`getDeviceNames()`** | 不存在 | 循环 `getDeviceAt(i).getName()` |
+| 放设备 | `addDevice(DeviceType, string 型号, double x, double y)` → 新设备名 | `(8,"PC-PT",900,900)` → `"PC6"`，设备 20→21 |
+| 删设备 | `removeDevice(QString)` | `true`，21→20 |
+| 连线 | `createLink(设备A, 口A, 设备B, 口B, CONNECT_TYPES)` | `(…,8100)` → `true`，链路 18→19，口上出现 `Cable` |
+| 删线 | `deleteLink(QString 设备, string 口)` | `true`，19→18；**只给一端**，给四段报 Invalid arguments |
+| 改位置 | `moveToLocation(int,int)` / `moveToLocationCentered(int,int)` | PC5 +20px 再挪回，坐标精确 |
+| 查支持模块 | `getSupportedModule()` → `vector<string>` | 1841 返回 12 个，含 `WIC-1ENET`、`HWIC-4ESW` |
+| 枚举槽位 | `getRootModule()` → `Module.getModuleCount/getModuleAt/getSlotPath` | 插模块的槽名从这里取，别猜 |
+| AAA 用户/client | `AcsServerProcess` 的 `addToClientMap` / `addToUserMap` / `deleteFrom*Map` / `removeAll*Records` | 读已实测；写接口存在 |
+
+### 三个枚举（**必须传数字，传字符串一律 false 且不报错**）
+
+`DeviceType`（0–51）：
+```
+eRouter=0 eSwitch=1 eCloud=2 eBridge=3 eHub=4 eRepeater=5 eCoAxialSplitter=6
+eAccessPoint=7 ePc=8 eServer=9 ePrinter=10 eWirelessRouter=11 eIpPhone=12
+eDslModem=13 eCableModem=14 eRemoteNetwork=15 eMultiLayerSwitch=16 eSwitch3650=17
+eLaptop=18 eTabletPC=19 ePda=20 eWirelessEndDevice=21 eWiredEndDevice=22 eTV=23
+eHomeVoip=24 eAnalogPhone=25 eMultiUser=26 eASA=27 eIoE=28 eHomeGateway=29
+eWirelessRouterNewGeneration=30 eCellTower=31 eCentralOfficeServer=32
+eCiscoAccessPoint=33 eEmbeddedCiscoAccessPoint=34 eSniffer=35 eMCU=36 eSBC=37
+eThing=38 eMCUComponent=39 eEmbeddedServer=40 eWirelessLanController=41 eCluster=42
+eGeoIcon=43 eLightWeightAccessPoint=44 ePowerDistributionDevice=45 ePatchPanel=46
+eWallMount=47 eSecurityAppliance=48 eMerakiServer=49 eNetworkController=50 ePLC=51
+```
+
+`CONNECT_TYPES`（**从 8100 起，不是 0**）：
+```
+FIRST_TYPE=8100 ETHERNET_STRAIGHT=8100 ETHERNET_CROSS=8101 ETHERNET_ROLL=8102
+FIBER=8103 PHONE=8104 CABLE=8105 SERIAL=8106 AUTO=8107 CONSOLE=8108
+WIRELESS=8109 COAXIAL=8110 OCTAL=8111 CELLULAR=8112 USB=8113 CUSTOM_IO=8114
+BLUETOOTH_PAIRED=8115 BLUETOOTH_BROADCAST=8116
+```
+
+`ModuleType`（0–19），`addModule` 的参数顺序是 `(slot, ModuleType, model)`：
+```
+eLineCard=0 eNetworkModule=1 eInterfaceCard=2 ePtRouterModule=3 ePtSwitchModule=4
+ePtCloudModule=5 ePtRepeaterModule=6 ePtHostModule=7 ePtModemModule=8 ePtLaptopModule=9
+ePtTVModule=10 eIpPhonePowerAdapter=11 ePtTabletPCModule=12 ePtPdaModule=13
+ePtWirelessEndDeviceModule=14 ePtWiredEndDeviceModule=15 eTrs35=16 eUsb=17
+eNonRemovableModule=18 eASAPowerAdapter=19
+```
+
+> 教训一句话：**"不抛错但返回 false" 最容易被误读成"API 不支持"**，
+> 实际往往是枚举值或参数顺序不对。遇到 false 先查文档里的枚举，别急着下否定结论。
+
+### 真的做不到 / 会出事
+
+| 想做的事 | 结论 |
+|---|---|
+| **保存 .pkt** | 官方文档原话："The API lacks project load/save functions"。`Options.saveFile(QString)` 只存偏好设置 |
+| **取拓扑图** | `getWorkspaceImage(QString format)` → `vector<byte>`，**参数是格式串（如 `"PNG"`）不是路径**；字节怎么带出文本通道还没实现 |
+| `AssessmentModel.getRunningConfig` | **崩 PT**（实测换 PID）。改用 `consoleLine.enterCommand("show running-config")` + 翻页 |
+| `enterChar(...)` | 字符串和数字两种形态都 `Invalid arguments`；翻页用 `enterCommand(" ")` |
+| `getDeviceNames()` | 不存在；循环 `getDeviceAt(i).getName()` |
 
 ## 五、PT 的 CLI 怪癖（每条都坑过我）
 

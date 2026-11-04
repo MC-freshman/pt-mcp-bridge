@@ -195,7 +195,31 @@ python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI �
 
 ### ✅ 已实测可用的调用
 
+**搭拓扑**（全部实测通过，含枚举基值——**这是之前判错的关键**）：
+
 ```javascript
+lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()
+
+// 放设备：DeviceType 是枚举 0..51，不是字符串！
+// eRouter=0 eSwitch=1 eCloud=2 eHub=4 eAccessPoint=7 ePc=8 eServer=9
+// eWirelessRouter=11 eIpPhone=12 eDslModem=13  eMultiLayerSwitch=16
+// eLaptop=18  eASA=27  eIoE=28 eCellTower=31 eWLC=41 eLightWeightAP=44
+lw.addDevice(8, "PC-PT", 900, 900)          // → "PC6"（返回新设备名）
+lw.removeDevice("PC6")                       // → true
+
+// 连线：CONNECT_TYPES 是枚举，值从 8100 起，不是 0！
+// ETHERNET_STRAIGHT=8100 ETHERNET_CROSS=8101 FIBER=8103 PHONE=8104
+// CABLE=8105 SERIAL=8106 AUTO=8107 CONSOLE=8108 WIRELESS=8109 COAXIAL=8110
+lw.createLink("Switch0","FastEthernet0/20","Switch3","FastEthernet0/20", 8100)  // → true
+lw.deleteLink("Switch0","FastEthernet0/20")  // 只给一端；给四段会 Invalid arguments
+```
+
+**改位置 / 查模块 / 设备与端口**：
+
+```javascript
+dev.moveToLocation(x, y) / moveToLocationCentered(x, y) / getXCoordinate() / getYCoordinate()
+dev.getSupportedModule()                     // 1841 返回 12 个，含 WIC-1ENET / HWIC-4ESW
+dev.serializeToXml()                         // 整台设备状态导成 XML
 ipc.network().getDeviceCount() / getDeviceAt(i) / getDevice("Router0")
 dev.getPortCount() / getPortAt(i) / getPort(name) / setName("Switch0")
 dev.getProcess("AcsServerProcess") / getPower() / setPower(bool) / getModel()
@@ -210,19 +234,61 @@ acs = dev.getProcess("AcsServerProcess")
    → isEnabled() / getClientRecordsAsString() / getUserRecordsAsString()
    → enableACSServerService() / addToClientMap() / addToUserMap()
    → deleteFromClientMap() / deleteFromUserMap() / removeAllUserRecords() / removeAllClientRecords()
-ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()      // 对象能拿到
 ```
 
-### ❌ 做不到，只能 GUI 手点（每条都试到确认无路）
+### ❌ 做不到 / 还没打通
 
 | 想做的 | 实测结论 |
 |---|---|
-| **创建连线** | `createLink(端口,端口,线型,int,int)` 被接受但**恒返回 `false`**（9 种线型名一样）；`autoConnectDevices(d,d)` 静默无效；`connectLink`/`addLink`/`connect` 在 `network()` 上不存在 |
-| **插硬件模块** | `addModule` 试了 7 种参数形式全 `Invalid arguments`；`removeModule` 同样进不去 |
-| **保存工程文件** | `appWindow.save/saveAs`、`network.saveFile`、`ipcManager.save`、`systemFileManager.saveFile` 等 12 个候选入口全 `undefined` |
-| **改 Logical 视图设备坐标** | `getCanvasItemIds()` 返回空、`getCanvasItemX(uuid)` 返回哨兵 `-9999999`；这组 API 是配 Physical 视图（机柜/楼宇）的 |
+| **保存工程文件** | 官方文档原话：**"The API lacks project load/save functions"**。`Options.saveFile(QString)` 实测只是"保存偏好设置到文件"，不是 `.pkt`。这条是 API 层没有接口，只能 Ctrl+S |
+| **取拓扑图** | `getWorkspaceImage(QString format)` → `vector<byte>`，**参数是格式串（如 `"PNG"`）不是文件路径**。拿到字节后怎么带出桥（resp 是文本通道）还没实现 |
+| **插硬件模块** | 签名是 `addModule(string slot, ModuleType type, string model)`（枚举 `ModuleType`：`eInterfaceCard=2`、`eNetworkModule=1`、`eLineCard=0`…）。槽位名**不能猜**（试了 16 种全 `false`），正路是先 `dev.getRootModule()` 再用 `getModuleCount/getModuleAt/getSlotPath` 枚举真槽名——这条还没实测 |
+
+> **早期这里的"创建连线/放设备/改坐标做不到"是错的**，已移到上面的"能做到"。原因是三个枚举的基值没查：`CONNECT_TYPES` 从 **8100** 起、`DeviceType` 是 **0–51**、`ModuleType` 是 **0–19**；按 0 起猜、或把枚举当字符串传，全部 `false` 且不报错——**"不抛错但返回 false"最容易误判成"API 不支持"**。
 
 > 曾经列在这里的"配 AAA Server 用户/client 表"**已被推翻**：真类名是 `AcsServerProcess` 而不是我一开始猜的 `RadiusServerProcess`，读写接口都在。误判原因见下一节。
+
+### 从零搭一张图（全链实测）
+
+```javascript
+lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()
+
+// 1) 放设备：DeviceType 枚举 + 型号串 + 坐标
+var r  = lw.addDevice(0,  "1841",      300, 100);   // → "Router0"
+var sw = lw.addDevice(1,  "2960-24TT", 300, 200);   // → "Switch0"
+var pc = lw.addDevice(8,  "PC-PT",     300, 300);   // → "PC0"
+
+// 2) 连线：CONNECT_TYPES 枚举，ETHERNET_STRAIGHT=8100
+lw.createLink(r,  "FastEthernet0/0", sw, "FastEthernet0/1", 8100);
+lw.createLink(sw, "FastEthernet0/2", pc, "FastEthernet0",   8100);
+
+// 3) 改名 / 位置 / 端口地址
+ipc.network().getDevice(r).setName("R1");
+ipc.network().getDevice(r).moveToLocation(120, 80);
+ipc.network().getDevice("R1").getPort("FastEthernet0/0")
+   .setIpSubnetMask("192.168.10.1", "255.255.255.0");
+ipc.network().getDevice("PC0").getPort("FastEthernet0")
+   .setIpSubnetMask("192.168.10.10", "255.255.255.0")
+   .setDefaultGateway("192.168.10.1");     // 注意：setIpSubnetMask 返回 void，别链式
+
+// 4) IOS 配置：getDevice(名).getConsoleLine().enterCommand("...")
+// 5) 校验：getPort().getLink() / getIpAddress() / commandLog / CLI 读回
+```
+
+撤掉也有对称接口：`lw.removeDevice(name)`、`lw.deleteLink(device, port)`（只给一端）。
+
+### 官方 IPC API 文档（本仓库结论的一手依据）
+
+这套接口有在线 Doxygen 文档，比猜方法名可靠得多：
+
+- [IpcManager](https://tutorials.ptnetacad.net/help/default/IpcAPI/class_ipc_manager.html) —— ExApp/Script Module 的入口，`getListeningPort()`
+- [LogicalWorkspace](https://tutorials.ptnetacad.net/help/default/IpcAPI/class_logical_workspace.html) —— `addDevice` / `createLink` / `deleteLink` / `removeDevice` / `getWorkspaceImage` / `addNote`
+- [Device](https://tutorials.ptnetacad.net/help/default/IpcAPI/class_device.html) —— `addModule` / `getSupportedModule` / `moveToLocation` / `getProcess` / `serializeToXml`
+- [Link](https://tutorials.ptnetacad.net/help/default/IpcAPI/class_link.html) —— `CONNECT_TYPES` 枚举值
+- [Module](https://tutorials.ptnetacad.net/help/default/IpcAPI/class_module.html) —— `getModuleCount` / `getModuleAt` / `getSlotPath`
+- [Options](https://tutorials.ptnetacad.net/help/default/IpcAPI/class_options.html) —— 明确"没有 .pkt 读写"
+
+早前没人告诉我有这套文档，靠 exe 字符串表 + `typeof` 扫描硬猜，代价是三个枚举基值和两个参数顺序全猜错，把"能做到"误判成"做不到"。**先查文档，再猜。**
 
 ### ⛔ 会直接把 PT 进程搞崩
 
