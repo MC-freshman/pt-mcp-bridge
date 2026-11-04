@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ptctl
 import ptplus
 
-SERVER_INFO = {"name": "pt-bridge", "version": "0.3.0"}
+SERVER_INFO = {"name": "pt-bridge", "version": "0.4.0"}
 PROTOCOL = "2024-11-05"
 
 DEVICES_JS = ("(function(){var n=ipc.network(),a=[];"
@@ -76,6 +76,18 @@ TOOLS = [
     {"name": "pt_command_log",
      "description": "读 PT 记录的命令条数（含脚本注入的），用来核对注入是否落地。",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "pt_aaa_state",
+     "description": "读某台 Server 上 AAA(ACS) 服务的真实内容：是否启用、client 表（名称/IP/密钥/类型）、"
+                    "user 表。以前误判成只能 GUI 手填的那块，实测可读。",
+     "inputSchema": {"type": "object",
+                     "properties": {"device": {"type": "string", "description": "如 Server0"}},
+                     "required": ["device"], "additionalProperties": False}},
+    {"name": "pt_processes",
+     "description": "列某台设备装载了哪些协议进程（RoutingProcess、AcsServerProcess、"
+                    "RadiusClientProcess、DhcpServerMainProcess 等）。只调 getProcess，不触发行为。",
+     "inputSchema": {"type": "object",
+                     "properties": {"device": {"type": "string"}},
+                     "required": ["device"], "additionalProperties": False}},
 ]
 
 
@@ -183,6 +195,37 @@ def handle(name, args, notify):
     if name == "pt_command_log":
         r = ptctl.send("String(ipc.commandLog().getEntryCount())", 15.0)
         return text_result(r, not r.get("ok", False))
+
+    if name == "pt_aaa_state":
+        r = ptctl.send(ptplus.aaa_state_js(args["device"]), 20.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        raw = r.get("result")
+        if raw == "NO_PROCESS":
+            return text_result({"ok": False, "error": "%s 上没有 AcsServerProcess（不是服务器或型号不对）"
+                                          % args["device"]}, True)
+        try:
+            d = json.loads(raw)
+        except Exception:
+            return text_result({"ok": False, "raw": str(raw)[:300]}, True)
+        def split(v):
+            if isinstance(v, list):
+                return v
+            return [x for x in str(v).split(",") if x]
+        return text_result({"ok": True, "device": args["device"], "enabled": d.get("enabled"),
+                            "clients": split(d.get("clients")), "users": split(d.get("users"))})
+
+    if name == "pt_processes":
+        r = ptctl.send(ptplus.processes_js(args["device"]), 60.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        got = [x for x in str(r.get("result", "")).split(",") if x]
+        if got == ["NO_DEVICE"]:
+            return text_result({"ok": False, "error": "设备不存在: %s" % args["device"]}, True)
+        return text_result({"ok": True, "device": args["device"], "processes": got,
+                            "count": len(got)})
 
     return text_result("unknown tool: " + str(name), True)
 

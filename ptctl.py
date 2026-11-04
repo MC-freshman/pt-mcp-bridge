@@ -138,14 +138,16 @@ def cli_run(device, command, wait=0.35, max_pages=12):
             continue
         added = st["text"][before["len"]:]
         # 设备刚被访问时第一条命令常被吞掉（回显里看不到命令本身），重发一次
-        if (command and not resent and i >= 2 and command.strip() not in added):
+        if command and not resent and (i >= 2 or re.search(PROMPT_RE, st["text"].rstrip())) \
+                and command.strip() not in added:
             cli_send(device, command)
             resent = True
             time.sleep(wait)
             continue
         if re.search(PROMPT_RE, st["text"].rstrip()):
             return {"ok": True, "prompt": st["prompt"], "mode": st["mode"],
-                    "added": added, "resent": resent}
+                    "added": added, "resent": resent,
+                    "echoed": command.strip() in added or not command.strip()}
         time.sleep(0.25)
     return {"ok": True, "prompt": (last or {}).get("prompt"), "mode": (last or {}).get("mode"),
             "added": (last or {}).get("text", "")[before["len"]:], "note": "没等到提示符，按已读内容返回"}

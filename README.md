@@ -80,7 +80,7 @@ python test_mcp_live.py         # 端到端：MCP -> 文件队列 -> PT -> 设�
 
 ---
 
-## MCP 工具（9 个）
+## MCP 工具（11 个）
 
 | 工具 | 作用 | 会不会动设备 |
 |---|---|---|
@@ -92,6 +92,8 @@ python test_mcp_live.py         # 端到端：MCP -> 文件队列 -> PT -> 设�
 | `pt_script` | **一次调用喂一整段命令**，逐条核对提示符层级、自动补 `enable`、带 MCP progress 通知 | 是 |
 | `pt_running_config` | 整份 running-config（内部先确保 enable） | 是 |
 | `pt_command_log` | PT 记录的命令条数，用来核对注入是否落地 | 只读 |
+| `pt_aaa_state` | **读 AAA(ACS) 服务的真实内容**：是否启用、client 表（名称/IP/密钥/类型）、user 表 | 只读 |
+| `pt_processes` | 列某台设备装载了哪些协议进程（112 个候选名逐个 `getProcess`） | 只读，不触发行为 |
 | `pt_eval` | 逃生舱：求值任意 ECMAScript。工具描述里点名了会崩 PT 的调用 | 看代码 |
 
 所有失败带 `failure_class`：`PRIVILEGE_DENIED / INVALID_ARGS / IPC_ERROR / TIMEOUT / NO_ECHO`，agent 不用靠猜分诊。
@@ -124,7 +126,7 @@ ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()   // 对象能拿到
 | **创建连线** | `createLink(端口,端口,线型,int,int)` 被接受但**恒返回 `false`**（9 种线型名都一样）；`autoConnectDevices(d,d)` 静默无效；`connectLink`/`addLink`/`connect` 在 `network()` 上不存在 |
 | **插硬件模块** | `addModule` 试了 7 种参数形式全 `Invalid arguments`；`removeModule` 同样进不去 |
 | **保存工程文件** | `appWindow.save/saveAs`、`network.saveFile`、`ipcManager.save`、`systemFileManager.saveFile` 等 12 个候选入口全 `undefined` |
-| **配 AAA Server 的用户/client 表** | `addAAAClient`/`addAAAUser` 只是 GUI 控件的槽函数名；`getProcess("RadiusServerProcess")` 上只有 `getPort`/`setPort` |
+| **配 AAA Server 的用户/client 表** | ⚠️ **本条已被推翻**：`getProcess("AcsServerProcess")` 上实测有 `isEnabled` / `getClientRecordsAsString` / `getUserRecordsAsString`（读）与 `enableACSServerService` / `addToClientMap` / `addToUserMap` / `deleteFromClientMap` / `deleteFromUserMap` / `removeAllUserRecords` / `removeAllClientRecords`（写）。早前判成"只能手填"是因为只按猜的名字扫了 `RadiusServerProcess`，没扫到真类名 `AcsServerProcess`。已封装成 `pt_aaa_state` 工具 |
 | **改 Logical 视图的设备坐标** | `getCanvasItemIds()` 返回空、`getCanvasItemX(uuid)` 返回哨兵 `-9999999`；这组 API 是配 Physical 视图（机柜/楼宇）的 |
 
 ### ⛔ 会直接把 PT 进程搞崩
@@ -158,6 +160,7 @@ bridge/
   module_entry.js      PT 里只需粘这一行 #include
 probes/                API 探测脚本（typeof 扫描 / 签名字节比对 / 崩点定位）
 tools/strings_probe.py 从 exe 还原 IPC 接口表
+tools/ipc_map.py       接口地图 + 全设备进程扫描 + 服务数据收割（两阶段：先列存在性再取数据）
 test_offline.py        离线自测，不连 PT
 test_mcp_live.py       端到端自测
 PT实测API表.md         全部实测结论

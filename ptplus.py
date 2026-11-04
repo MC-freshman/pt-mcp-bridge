@@ -102,7 +102,55 @@ def parse_script_result(lines, steps):
     return {"ok": not rejected, "total": len(lines), "rejected": rejected, "steps": out}
 
 
-# ---------- 验收断言：整份配置里必须出现/不得出现的行 ----------
+# ---------- AAA Server：实测可达的读写口（以前误判成 GUI-only）----------
+AAA_JS = ("(function(){var p=ipc.network().getDevice(%s).getProcess('AcsServerProcess');"
+          "if(!p)return 'NO_PROCESS';"
+          "return JSON.stringify({enabled:p.isEnabled(),clients:p.getClientRecordsAsString(),"
+          "users:p.getUserRecordsAsString()})})()")
+
+
+def aaa_state_js(device):
+    return AAA_JS % json.dumps(device)
+
+
+# ---------- 每台设备装了哪些进程（只调 getProcess，不触发任何行为）----------
+# 进程名全集：从 exe 串表里所有 *Process 字面量抽出（112 个），本仓库 tools/ipc_map.py 可重新生成
+PROC_NAMES = [
+    "Aclv6Process", "AcsServerProcess", "AnalogPhoneProcess", "AsaAclProcess", "AsaAclv6Process",
+    "AsaFwProcess", "AsaNatProcess", "AsaNatv6Process", "BnepProcess", "CBridgeProcess",
+    "CCMEProcess", "CDhcpSnoopingProcess", "CapwapAcProcess", "CapwapProcess", "CbacProcess",
+    "ChapProcess", "CsmaCaProcess", "CsmaCdProcess", "CustomBluetoothProcess", "CustomTcpProcess",
+    "CustomUdpProcess", "DNSResolverProcess", "DhcpClientProcess", "DhcpServerMainProcess",
+    "DhcpServerProcess", "Dhcpv6ClientProcess", "Dhcpv6MainProcess", "Dhcpv6ServerMainProcess",
+    "Dhcpv6ServerProcess", "DnsServerProcess", "EapolClientMainProcess", "EapolClientProcess",
+    "EapolMainProcess", "EapolServerMainProcess", "EapolServerProcess", "EapolWirelessMainProcess",
+    "EapolWirelessServerMainProcess", "EapolWirelessServerProcess", "EigrpMainProcess",
+    "EigrpProcess", "Eigrpv6MainProcess", "Eigrpv6Process", "EthernetEncapProcess", "FirewallProcess",
+    "Firewallv6Process", "FowardingProcess", "FrameRelayProcess", "H323Process", "HdlcProcess",
+    "HsrpProcess", "Hsrpv6Process", "IPCPProcess", "IcmpProcess", "Icmpv6Process", "InvArpProcess",
+    "IoeClientProcess", "IoeServerProcess", "IpFragmentationProcess", "IpsecProcess",
+    "Ipv6FragmentationProcess", "Ipv6IpProcess", "JsTcpProcess", "L2NatProcess", "LLDPProcess",
+    "LWWirelessServerProcess", "LacpProcess", "NFCollectorProcess", "NatV6Process", "NetflowProcess",
+    "Netflowv6Process", "NtpClientProcess", "NtpPTProcess", "OspfMainProcess", "OspfProcess",
+    "Ospfv3MainProcess", "Ospfv3Process", "PMTUDiscoveryProcess", "PagpProcess", "PhoneMediaProcess",
+    "PingProcess", "PingTcpProcess", "PortKeepAliveProcess", "PortMappedProcess", "QueueProcess",
+    "RadiusClientProcess", "RadiusEapServerProcess", "RadiusServerProcess", "RepeaterProcess",
+    "ReverseTelnetProcess", "Ripv6MainProcess", "Ripv6Process", "RoutingProcess",
+    "RoutingProcessv6Process", "SshClientProcess", "SshServerProcess", "StpMainProcess",
+    "TacacsClientProcess", "TacacsServerProcess", "TacasClientProcess", "TacasServerProcess",
+    "TcpUserTrafficProcess", "TelnetClientProcess", "TelnetServerProcess", "TraceRouteProcess",
+    "UdpTraceRouteProcess", "WLCServerProcess", "WirelessClientProcess", "WirelessServerProcess",
+    "Zfwv6Process",
+]
+
+
+def processes_js(device, names=None):
+    names = names or PROC_NAMES
+    return ("(function(){var d=ipc.network().getDevice(%s);if(!d)return 'NO_DEVICE';"
+            "var ps=[%s],hit=[];for(var i=0;i<ps.length;i++){var p=null;"
+            "try{p=d.getProcess(ps[i])}catch(e){}if(p)hit.push(ps[i])}"
+            "return hit.join(',')})()"
+            % (json.dumps(device), ",".join(json.dumps(x) for x in names)))
 def check_expect(config_text, must_contain, must_absent):
     have = [l.strip() for l in str(config_text or "").split("\n") if l.strip()]
     joined = "\n".join(have)
