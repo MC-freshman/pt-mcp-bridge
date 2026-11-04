@@ -1,10 +1,10 @@
 # Packet Tracer 8.0 × MCP 桥
 
-让 AI agent 通过 MCP 协议读写 Cisco Packet Tracer 8.0：枚举拓扑、还原连线、往 IOS CLI 注命令、读回终端输出与 running-config、读 AAA(ACS) 服务的用户与 client 表、查每台设备的协议进程、改终端 IP 与设备名。
+让 AI agent 通过 MCP 协议读写 Cisco Packet Tracer 8.0：枚举拓扑、还原连线、**放设备与连线**、往 IOS CLI 注命令、读回终端输出与 running-config、改设备名与端口地址、**配 DHCP 作用域并开关服务**、读 AAA(ACS) 服务的用户与 client 表、查每台设备的协议进程、导出画布拓扑图。
 
 难点不在 MCP，而在 **Packet Tracer 是完全封闭的目标**：没有命令行接口、没有 headless 模式、`.pkt` 工程文件全加密、随包 `.pts` 模块也全加密。本仓库给出**逆向出来的可用边界**，以及在这个边界内搭起来的一条稳定通路。
 
-实测环境：Packet Tracer **8.0.0.0212** Win64 · Python **3.9.13**（只用标准库）· Windows 11 · 当前版本 **v0.4，11 个工具**。
+实测环境：Packet Tracer **8.0.0.0212** Win64 · Python **3.9.13**（只用标准库）· Windows 11 · 当前版本 **v0.5，12 个工具**。
 
 ---
 
@@ -118,10 +118,8 @@ python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI �
 
 ---
 
-## 四、功能清单（11 个工具，附实测返回）
+## 四、功能清单
 
-| 工具 | 参数 | 作用 | 会动设备吗 |
-|---|---|---|---|
 ### 让新会话的模型一上来就知道有这些能力
 
 光靠 tool description 不够——新会话的模型经常根本不知道自己有这个 MCP。所以 v0.5 在 MCP 的四个层面都铺了信息：
@@ -133,11 +131,13 @@ python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI �
 | `prompts` | `pt-build-topology` / `pt-verify-lab` / `pt-diagnose` | 三条现成工作流，带参数渲染成完整指令 |
 | `tools` | 新增 `pt_guide`：直接把上面那份简报作为工具返回 | **兜底**——客户端不转发 instructions、也不支持 resources 时，模型调一次就有 |
 
-`instructions` 里的五个坑是挑出来的最高代价项：枚举传数字（`CONNECT_TYPES` 从 8100 起）、`deleteLink` 只给一端、`AssessmentModel.getRunningConfig` 崩 PT、只有 `writePlainTextToFile` 两参写文件干净、断电会清 running-config。
+`instructions` 里的坑是挑出来的最高代价项（现 8 条）：枚举传数字（`CONNECT_TYPES` 从 8100 起）、**型号串从 `getDeviceModels()` 取而不是猜**、`deleteLink` 只给一端、`AssessmentModel.getRunningConfig` 崩 PT、只有 `writePlainTextToFile` 两参写文件干净、断电会清 running-config、**新设备的 initial-config dialog 要等它真出现再答 `no`**、**三个读数通道会骗你**（详见下面第七节）。
+
+"做不到"清单也从 2 条扩到 6 条：存盘、插模块之外，**DNS 加 A 记录、改 Web 页面正文、让 PC 真的发 DHCP 请求、清 CLI 缓冲区**都只能人手点。
 
 自测：`python test_protocol.py`（不连 PT，检查 caps、instructions、12 工具、3 资源、3 提示词都在）。
 
-## MCP 工具（12 个）
+### MCP 工具（12 个）
 
 | 工具 | 参数 | 作用 | 会动设备吗 |
 |---|---|---|---|
@@ -256,12 +256,41 @@ acs = dev.getProcess("AcsServerProcess")
    → deleteFromClientMap() / deleteFromUserMap() / removeAllUserRecords() / removeAllClientRecords()
 ```
 
+**配服务（11-04 钓鱼实验实测，这一组以前被误判成"只能 GUI"）**：
+
+```javascript
+// 取值正门：型号串和线型名都从这里拿，别猜
+nb = ipc.appWindow().getNetworkComponentBox()
+nb.getDeviceTypes()              // 17 个类别名：Routers, Switches, End Devices, …
+nb.getDeviceModels("Routers")    // → 1841, 1941, 2911, ISR4331, Router-PT, …
+nb.getConnectionTypes()          // → Copper Straight-Through, Serial DCE, …
+
+// DHCP 作用域：注意 getPool("口名") 返回 null，只有 getPoolAt(0) 有池
+sp = dev.getProcess("DhcpServerMainProcess")
+      .getDhcpServerProcessByPortName("FastEthernet0");
+pool = sp.getPoolAt(0);
+pool.setStartIp("192.168.1.10"); pool.setMaxUsers(60);
+pool.setDefaultRouter("192.168.1.254"); pool.setDnsServerIp("192.168.2.6");
+sp.setEnable(true);
+// 没有 setSubnetMask；改完 maxUsers 后 pool.getEndIp() 自己变成 192.168.1.69
+
+// 开关服务：三类进程都有 setEnable
+dev.getProcess("DnsServerProcess").setEnable(true);   // isEnabled() 读回 true
+dev.getProcess("HttpServer").setEnable(true);         // getPortNumber() → 80
+```
+
+实测一次钓鱼实验的用量：12 台设备、11 根线、两台路由器共 33 条 IOS 命令、三台服务器地址 + 两个作用域 + 三个服务开关，全部由桥完成，人只点了 DNS 记录和一处网页文本。
+
 ### ❌ 做不到 / 还没打通
 
 | 想做的 | 实测结论 |
 |---|---|
 | **保存工程文件** | 官方文档原话：**"The API lacks project load/save functions"**。`Options.saveFile(QString)` 实测只是"保存偏好设置到文件"，不是 `.pkt`。这条是 API 层没有接口，只能 Ctrl+S |
 | **插硬件模块** | 签名 `addModule(string slot, ModuleType type, string model)` 已确认，但槽位名要从 `dev.getRootModule()` 的 `getSlotPath()` 取；实测 1841 的模块树只暴露一个 `eNonRemovableModule`、槽路径为空，断电后 `addModule` 仍全部 `false` → **该型号的槽位没通过 IPC 暴露**，插模块只能 GUI |
+| **DNS 加资源记录** | `DnsServerProcess` 上只有 `setEnable` 可写；`addARecord / addRecord / addRR / insertRecord / addNameServerDbEntry` 全部不存在 → Services→DNS 面板手填后**还要点 `Add`**，只填不点表里不会多一行 |
+| **改 Web 页面正文** | `HttpServer` 只有 `getPage`，没有 `setPage / setPageContent / addPage`；`IoeServerProcess.getFiles` 在 Server 上也不存在 → Services→HTTP→`index.html` 的 `(edit)` 手改 |
+| **让 PC 真的去取地址** | `port.setDhcpClientFlag(true)` 只改配置标志，**不发 Discover**；`DhcpClientProcess` 只有 `getDataOfPort / isConfigured / isPortExisted` 三个读方法。翻转开关也无效 → 必须 GUI 点 Static→DHCP |
+| **清 CLI 缓冲区** | `TerminalLine` 只有 `getOutput / getPrompt / getMode / getCommandPrompt / getRs232Port`，**没有清屏方法**；IOS 也没有 `clear`。CLI 被报错行和重复命令搞脏时唯一干净的办法是 `removeDevice` + `addDevice` 重放（实测删设备不丢别的设备配置，删 `Power Distribution Device` 也不牵连路由器） |
 
 > **取拓扑图已打通**（不再算做不到）：`getWorkspaceImage("PNG")` 返回 `vector<byte>`——**参数是格式串不是路径**。
 > 拿到字节后在 JS 里 hex 编码，走已验证干净的 `writePlainTextToFile` 落盘，Python 侧 `unhexlify` 还原成 PNG。
@@ -313,12 +342,28 @@ ipc.network().getDevice("PC0").getPort("FastEthernet0")
 
 早前没人告诉我有这套文档，靠 exe 字符串表 + `typeof` 扫描硬猜，代价是三个枚举基值和两个参数顺序全猜错，把"能做到"误判成"做不到"。**先查文档，再猜。**
 
+上面六个链接是本仓库实际引用过的类页。`getDeviceTypes / getDeviceModels / getConnectionTypes` 这三个取值方法属于 `NetworkComponentBox` 类，页名请以 [IpcAPI 首页的类列表](https://tutorials.ptnetacad.net/help/default/IpcAPI/) 为准——本仓库没验证过它的直达 URL，不在此处瞎给。
+
 ### ⛔ 会直接把 PT 进程搞崩
 
 `AssessmentModel.getRunningConfig(...)` —— 实测让 PT 换了一次进程 PID。读配置请改用
 `consoleLine.enterCommand("show running-config")` + 自动翻页。
 
-完整清单（PT CLI 的 8 条怪癖、权限枚举真名、为什么 `printDebug` 不出声、1841 插 `WIC-1ENET` 后新口叫 `Ethernet0/1/0`）见 **[PT实测API表.md](PT实测API表.md)**。
+### 读数会骗你的四个通道（11-04 新增，每一条都造成过一次假阴性）
+
+这一节的意义不是"少四个方法"，而是**防止 agent 拿错误的读通道去断言"用户没配好"**：
+
+| 通道 | 它返回 | 实际含义 |
+|---|---|---|
+| `HttpServer.getPage("index.html")` | 恒 369 字符的内置默认页 | **不反映用户在界面编辑过的页面**。今天据此误判了一次"你还没提交"，而浏览器实际已经吐出改好的页面 |
+| `DnsServerProcess.getIpAddOfDomain(域名)` | `0.0.0.0` | 读的是**缓存**。记录要用 `getRrFromNameServerDbAt(0)` 取 data 对象（`.name / .ipAddress / .pduType / .ttl`）；条数看 `getSizeOfNameServerDb()`，不是 `getEntryCount()` |
+| `DhcpPool.getLeaseAt(i)` | 两台 DHCP 都记同一个 MAC | PT 的租约簿记**与客户端实际采纳的地址不对齐**（表里 `.11`、客户端用 `.10`）。判"哪台应答了"要看下发的字段值（如 DNS 指向谁），不能看租约表 |
+| `dev.getHostName()` | 型号默认名 `Router` | 不是 IOS hostname，判 hostname 看 CLI 提示符 |
+
+> 规则一句话：**返回 `0` / `0.0.0.0` / 空串 / 恒定值时，先怀疑通道，再怀疑事实。**
+> 要下"没配上"的结论，必须换一个独立通道——最好是应用自己的输出（浏览器、面板、PT 自己的日志）。
+
+完整清单（PT CLI 的 12 条怪癖、权限枚举真名、为什么 `printDebug` 不出声、1841 插 `WIC-1ENET` 后新口叫 `Ethernet0/1/0`、MCP server 掉线时的退路）见 **[PT实测API表.md](PT实测API表.md)**。
 
 ---
 

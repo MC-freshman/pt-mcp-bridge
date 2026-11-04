@@ -73,6 +73,28 @@ ipc.options() / ipc.multiUserManager() / ipc.hardwareFactory()   // 对象能拿
 | 查支持模块 | `getSupportedModule()` → `vector<string>` | 1841 返回 12 个，含 `WIC-1ENET`、`HWIC-4ESW` |
 | 枚举槽位 | `getRootModule()` → `Module.getModuleCount/getModuleAt/getSlotPath` | 插模块的槽名从这里取，别猜 |
 | AAA 用户/client | `AcsServerProcess` 的 `addToClientMap` / `addToUserMap` / `deleteFrom*Map` / `removeAll*Records` | 读已实测；写接口存在 |
+| **配 DHCP 作用域** | `getProcess("DhcpServerMainProcess").getDhcpServerProcessByPortName("FastEthernet0")` → `getPoolAt(0)` → `setStartIp/setMaxUsers/setDefaultRouter/setDnsServerIp` | 11-04 钓鱼实验：写进去回读 `start=192.168.1.10 max=60 dns=192.168.2.6 end=192.168.1.69`，面板如实显示。**`getPool("口名")` 返回 null，只有 `getPoolAt(0)` 有池；没有 `setSubnetMask`** |
+| **开/关服务** | 各进程上的 `setEnable(bool)`：`DhcpServerProcess` / `DnsServerProcess` / `HttpServer` 都有 | 三台服务器实测 `isEnable/isEnabled` 从 false 翻成 true |
+| **写服务器地址** | `port.setIpSubnetMask(ip, mask)` + `port.setDefaultGateway(gw)` | 界面 Config 页如实显示 `192.168.2.254`；**Port 上没有网关 getter，只能靠肉眼看界面确认** |
+| **取拓扑图** | `getWorkspaceImage("PNG")` → `vector<byte>`，字节转 hex 走文本通道 | 已打通（见提交 3420393），参数是格式串不是路径 |
+
+### 取值正门：`ipc.appWindow().getNetworkComponentBox()`
+
+**先调这三个方法拿合法取值，别猜字符串。** 11-04 又白猜了一轮（`'Router-PT'`、`'Router1841'`、`'1841'` 当第一参）才想起它们：
+
+| 方法 | 返回 | 实测内容 |
+|---|---|---|
+| `getDeviceTypes()` | 17 个类别名 | `Routers, Switches, Hubs, Wireless Devices, Boards, End Devices, Security, WAN Emulation, Home, Smart City, Industrial, Power Grid, Actuators, Sensors, Miscellaneous, Structured Cabling, Custom Made Devices` |
+| `getDeviceModels(类别名)` | 该类别的型号串 | `Routers` → `1841, 1941, 2620XM, 2621XM, 2811, 2901, 2911, 819HG-4G-IOX, 819HGW, 829, CGR1240, ISR4321, ISR4331, Router-PT, Router-PT-Empty`；`Switches` → `2960-24TT, 2950-24, 2950T-24, Switch-PT, 3560-24PS, 3650-24PS, IE-2000, Bridge-PT`；`End Devices` → `PC-PT, Laptop-PT, Server-PT, Meraki-Server, NetworkController, Printer-PT, 7960, …, Sniffer` |
+| `getConnectionTypes()` | 线型显示名 | `Console, Copper Straight-Through, Copper Cross-Over, Fiber, Phone, Coaxial, Serial DCE, Serial DTE, Octal, IoT Custom Cable, USB`（每项出现两次） |
+
+**注意两个坑：**
+
+1. `getDeviceTypes()` 的**数组下标不是 `addDevice` 的第一参**。第一参是 `DeviceType` 枚举：
+   `1841` 用 `eRouter=0`、`2960-24TT` 用 `eSwitch=1`、`PC-PT` 用 `ePc=8`、`Server-PT` 用 `eServer=9`。
+   实测 `addDevice(5,"PC-PT",…)`（5 是 `End Devices` 的下标）**返回空串不放设备**，必须用 8。
+2. 传字符串当第一参时，纯数字串（`"1841"`）被当整数解析、静默返回空串；含字母的（`"Router"`）直接 `Invalid arguments`。
+   两种都表现为"没放出来"，别据此判 API 不通。
 
 ### 三个枚举（**必须传数字，传字符串一律 false 且不报错**）
 
@@ -115,10 +137,13 @@ eNonRemovableModule=18 eASAPowerAdapter=19
 | 想做的事 | 结论 |
 |---|---|
 | **保存 .pkt** | 官方文档原话："The API lacks project load/save functions"。`Options.saveFile(QString)` 只存偏好设置 |
-| **取拓扑图** | `getWorkspaceImage(QString format)` → `vector<byte>`，**参数是格式串（如 `"PNG"`）不是路径**；字节怎么带出文本通道还没实现 |
 | `AssessmentModel.getRunningConfig` | **崩 PT**（实测换 PID）。改用 `consoleLine.enterCommand("show running-config")` + 翻页 |
 | `enterChar(...)` | 字符串和数字两种形态都 `Invalid arguments`；翻页用 `enterCommand(" ")` |
 | `getDeviceNames()` | 不存在；循环 `getDeviceAt(i).getName()` |
+| **DNS 加资源记录** | `DnsServerProcess` 上只有 `setEnable` 可写，`addARecord/addRecord/addRR/insertRecord/addNameServerDbEntry` 全不存在 → 只能 Services→DNS 面板手填 + 点 `Add` |
+| **改 Web 页面正文** | `HttpServer` 只有 `getPage`，没有 `setPage/setPageContent/addPage` → 只能 Services→HTTP→`index.html` 的 `(edit)` 手改 |
+| **让 PC 真的去取地址** | `port.setDhcpClientFlag(true)` 只改配置标志，**不发 Discover**；`DhcpClientProcess` 只有 `getDataOfPort/isConfigured/isPortExisted` 三个读方法，没有 start。翻转开关也不行 → 必须 GUI 点 Static→DHCP |
+| **清 CLI 缓冲区** | `TerminalLine` 只有 `getOutput/getPrompt/getMode/getCommandPrompt/getRs232Port`，**没有清屏方法**。CLI 被报错行和重复命令搞脏时，唯一干净办法是 `removeDevice` + `addDevice` 重放（实测删 PDU 不牵连路由器配置） |
 
 ## 五、PT 的 CLI 怪癖（每条都坑过我）
 
@@ -130,8 +155,34 @@ eNonRemovableModule=18 eASAPowerAdapter=19
 6. **1841 插 `WIC-1ENET` 后新口叫 `Ethernet0/1/0`**，不是 `FastEthernet1/0`。
 7. **1841 的模块列表里没有 `NM-2FE`**（那是 2600/2800 的），要加可路由 FE 口选 `WIC-1ENET`；`HWIC-4ESW` 是设备内二层交换机，不能当 PPPoE 三层口。
 8. `write memory` 在 PT 的 1841 上会回 `Building configuration... [OK]`，但它**不影响 `.pkt` 文件**——文件还是要 Ctrl+S。
+9. **新设备开机停在 `Would you like to enter the initial configuration dialog? [yes/no]:`**。`no` 必须等这行文本真出现在 `getPrompt()` 里再发；发早了（boot 没完成）后面**整段配置命令全被当对话框回答吞掉**，而且每条都"执行成功"、只是提示符一直停在那句问话上。11-04 实测 18 条命令白发自救方式只有删设备重来。
+10. **设备可能留在全局配置模式**，此时 `show running-config` 和 `terminal length 0` 都回 `% Invalid input detected at '^' marker.`。读配置前先发 `end` 再 `enable`。
+11. **`%LINK-5-CHANGED: Interface … changed state to up` 不是报错**。用"输出里有 `%` 就算被拒"当判据会误杀；只认 `%Invalid / %Incomplete / %Ambiguous / %Error / %Unknown`。
+12. **`addDevice(0,"1841",x,y)` 会顺带放出一台 `Power Distribution Device`**（`DeviceType ePowerDistributionDevice=45`），设备计数 +2。删它实测**不牵连**路由器的 IOS 配置。
 
 ## 六、还没验的
 
-- ExApp/CEP 通道：PT 在 `127.0.0.1` 开了 **38000 / 39000**（日志 `CPtmpServer started at port ...`），`ipc.ipcManager().getListeningPort()` 有权限可调；ExApp 清单字段含 `EXECUTABLE_PATH` / `INTEGRITY_FILE_HASH` / `CERTIFICATE` / `--no-ssl-enforce`。**带 `createLink`/`addDevice` 的 `LogicalWorkspace` 是否只对 ExApp 开放，未知。**
+- ExApp/CEP 通道：PT 在 `127.0.0.1` 开了 **38000 / 39000**（日志 `CPtmpServer started at port ...`），`ipc.ipcManager().getListeningPort()` 有权限可调；ExApp 清单字段含 `EXECUTABLE_PATH` / `INTEGRITY_FILE_HASH` / `CERTIFICATE` / `--no-ssl-enforce`。
+- **已排除的猜测**：`LogicalWorkspace` 的 `addDevice/createLink` **不需要 ExApp 身份**，普通 Script Module 勾满权限即可调用（11-04 钓鱼实验全程用 Script Module 放设备连线，未接 ExApp）。
 - `ipc.options()` / `ipc.hardwareFactory()` / `ipc.appWindow()` 上的方法名没扫全（我只测了自己猜的那批）。
+
+## 七、读数会骗你的四个通道（11-04 实测，都造成过假阴性）
+
+| 通道 | 它说什么 | 真相 |
+|---|---|---|
+| `DnsServerProcess.getIpAddOfDomain("www.test.com")` | `0.0.0.0` | **读的是缓存**。记录其实已在库里，要用 `getRrFromNameServerDbAt(0)` 取 data 对象，字段是 `name / ipAddress / pduType / ttl`（实测 `www.test.com → 192.168.2.5, DnsRrA, 86400`）。`getEntryCount()` 也是缓存数（恒 0），记录条数看 `getSizeOfNameServerDb()` |
+| `HttpServer.getPage("index.html")` | 恒 369 字符的内置默认页 | **不反映设备上编辑过的页面**。用户把 `Cisco Packet Tracer` 改成 `Forged Web Server` 之后它仍返回原文，我据此误判"你没提交"。唯一判据是浏览器实际响应 |
+| `DhcpPool.getLeaseAt(i)` | 两台 DHCP 的表里都记 `192.168.1.11(PC0 的 MAC)` | 而 PC0 实际用的是 `.10`。**PT 的租约簿记与客户端采纳的地址不对齐**，不能拿它判"哪台应答了"。判据换成"下发的 DNS 字段值"（`192.168.3.1` 只存在于伪造池） |
+| `dev.getHostName()` | 型号默认名 `Router` | 不是 IOS hostname，判 hostname 看提示符（第五节第 5 条） |
+
+> 共同教训：**"读不到"要先怀疑通道，再怀疑事实。** 尤其当一个方法返回 `0` / `0.0.0.0` / 空串 / 恒定值时，
+> 它可能是另一张表的接口，而不是当前对象的 getter。断言"没配好"之前，换一个独立通道（最好是应用自己的输出）复核。
+
+## 八、MCP server 挂了怎么办（11-04 实测）
+
+| 现象 | 判据 | 退路 |
+|---|---|---|
+| `mcp_call` 一律回 `Streamable HTTP error: Error POSTing to endpoint: Not Found` | **先查 PT 进程**：`Get-Process -Id <PID>` 有返回且 `Responding=True`、窗口标题还在 → PT 活着，是 MCP server 自己掉了 | 直接走 `python ptctl.py js "<ES5 表达式>"`，文件通道（`cmd.txt`/`resp.txt`）照常工作，能力与 `pt_eval` 完全等价 |
+| `pt_health` 回 `TIMEOUT` 且 PID 变了 | PT 重启过，桥模块没再 Start | 让用户 `Extensions → Scripting → Configure Script Modules` 点 Start |
+| `ptctl.py` 报 `PermissionError: [WinError 5] … cmd.txt.tmp -> cmd.txt` | 桥目录被并发读走（多会话共用同一目录） | 等 1–3 秒重试即可，不是逻辑错误 |
+| 长 JS 用 `python -c` 内联报 `SyntaxError: Parse error` | shell 吃引号/反斜杠 | 写成 `.py` 文件再跑，JS 放 raw string 里 |

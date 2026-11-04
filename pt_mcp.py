@@ -38,19 +38,40 @@ PT 必须处于运行状态、且桥模块已 Start。任何调用报 TIMEOUT �
 写：  pt_cli(单条 IOS 命令) · pt_script(一整段命令，自动 enable/翻页，一次回汇总)
 万能：pt_eval(求值任意 ECMAScript，用于放设备/连线/改名/改位置/取图等 IPC 调用)
 
-## 五个最容易踩的坑（都实测过）
+## 三条最常用的 IPC 一行式（细节调 pt://api 或 pt_guide）
+放设备+连线： lw.addDevice(0,"1841",x,y) → 返回名；lw.createLink(名,口,名,口,8100)
+型号串来源：   ipc.appWindow().getNetworkComponentBox().getDeviceModels("Routers")
+配 DHCP 作用域：getProcess("DhcpServerMainProcess").getDhcpServerProcessByPortName("FastEthernet0")
+                .getPoolAt(0) 再 setStartIp/setMaxUsers/setDefaultRouter/setDnsServerIp，最后 sp.setEnable(true)
+
+## 最容易踩的坑（都实测过）
 1. 枚举必须传**数字**，传字符串一律返回 false 且不报错：
    CONNECT_TYPES 从 **8100** 起（ETHERNET_STRAIGHT=8100, CROSS=8101, AUTO=8107）
    DeviceType：eRouter=0 eSwitch=1 ePc=8 eServer=9 eDslModem=13
-2. `deleteLink(设备, 口)` **只给一端**；给四段会 Invalid arguments。
-3. `AssessmentModel.getRunningConfig` **会把 PT 弄崩**，绝不调用；读配置用 pt_running_config。
-4. 写本机文件只有 `writePlainTextToFile(path,text)` 两参是干净的，别试别的签名。
-5. 设备断电会**清空 running-config**（1841 实测），任何 setPower(false) 之前必须让用户先 Ctrl+S。
+2. **型号串别凭名字猜**：先调 `ipc.appWindow().getNetworkComponentBox().getDeviceModels("Routers")`
+   拿合法串（`1841/2911/ISR4331/Router-PT…`）。而 `getDeviceTypes()` 的**数组下标不是 addDevice 的第一参**——
+   `addDevice(5,"PC-PT")` 返回空串不报错，必须用 ePc=8。
+3. `deleteLink(设备, 口)` **只给一端**；给四段会 Invalid arguments。
+4. `AssessmentModel.getRunningConfig` **会把 PT 弄崩**，绝不调用；读配置用 pt_running_config。
+5. 写本机文件只有 `writePlainTextToFile(path,text)` 两参是干净的，别试别的签名。
+6. 设备断电会**清空 running-config**（1841 实测），任何 setPower(false) 之前必须让用户先 Ctrl+S。
+7. 新设备开机停在 `Would you like to enter the initial configuration dialog? [yes/no]:`。
+   `no` 必须等这句真出现在 prompt 里再发；发早了后面**整段配置全被当回答吞掉**，
+   而且每条都"成功"、提示符一直停在那句问话上——只能删设备重放。
+8. **读数通道会骗你，"读不到"不等于"没配好"**（三条都造成过误判）：
+   `HttpServer.getPage()` 返回内置模板，不反映用户编辑过的 index.html；
+   `DnsServerProcess.getIpAddOfDomain()` 读缓存恒 0.0.0.0，记录要用 `getRrFromNameServerDbAt(0)` 读；
+   `DhcpPool.getLeaseAt()` 的簿记与客户端实际采纳的地址不对齐。
+   断言失败前先换一个独立通道，最好是应用自己的输出（浏览器、界面面板）。
 
 ## 它做不到（必须请用户手点，别绕圈子）
 - **保存 .pkt**：官方 API 没有读写工程的接口 → 提醒用户 Ctrl+S
 - **插硬件模块**：该型号槽位没通过 IPC 暴露 → 让用户在 Physical 页断电插模块再通电
-- 其余（放设备、连线、删线、改名、改位置、配 IP、IOS 配置、取拓扑图）都能编程完成
+- **DNS 加资源记录**：`DnsServerProcess` 只有 `setEnable` 可写 → Services→DNS 面板手填后点 Add
+- **改 Web 页面正文**：`HttpServer` 只有 `getPage` 没有 `setPage` → Services→HTTP→index.html 的 (edit) 手改
+- **让 PC 真的发 DHCP 请求**：`setDhcpClientFlag(true)` 只改标志，不发 Discover → GUI 点 Static→DHCP
+- **清 CLI 缓冲区**：`TerminalLine` 没有清屏方法 → 只能 removeDevice + addDevice 重放
+- 其余（放设备、连线、删线、改名、改位置、配 IP、IOS 配置、配 DHCP 作用域、开关服务、取拓扑图）都能编程完成
 
 ## 工作方式
 用户说"配好/搭好/验一下"时：先用只读工具摸清现状（pt_devices + pt_wiring + pt_processes），
@@ -91,6 +112,24 @@ d.getProcess("AcsServerProcess") ->
 ipc.commandLog().getEntryCount()   ipc.simulation().isSimulationMode()
 ipc.systemFileManager() -> writePlainTextToFile(path,text) / getFileContents(path)
 
+## 服务读写（11-04 钓鱼实验实测）
+nb = ipc.appWindow().getNetworkComponentBox()
+   -> getDeviceTypes()            17 个类别名（Routers/Switches/End Devices…）
+   -> getDeviceModels("Routers")  该类别的合法型号串，别猜
+   -> getConnectionTypes()        线型显示名
+sp = d.getProcess("DhcpServerMainProcess").getDhcpServerProcessByPortName("FastEthernet0")
+   sp.getPoolCount() / sp.getPoolAt(0)      // getPool("口名") 返回 null，只有 getPoolAt(0) 有池
+   pool.setStartIp(ip) / setMaxUsers(n) / setDefaultRouter(gw) / setDnsServerIp(ip)
+   // 没有 setSubnetMask；改 maxUsers 后 getEndIp() 会自己跟着变
+   sp.setEnable(true) / sp.isEnable()
+dns = d.getProcess("DnsServerProcess")
+   -> setEnable(bool) / isEnabled() / getSizeOfNameServerDb()   // 记录条数看这个
+   -> getRrFromNameServerDbAt(0) 得 data 对象：.name .ipAddress .pduType .ttl
+   // 加 A 记录没有写接口，只能 GUI；getIpAddOfDomain() 读的是缓存，恒 0.0.0.0
+http = d.getProcess("HttpServer")
+   -> setEnable(bool) / isEnabled() / getPortNumber() / getPage("index.html")
+   // getPage 返回内置模板，不反映用户在界面改过的页面；改正文只能 GUI
+
 ## 枚举
 DeviceType: eRouter=0 eSwitch=1 eCloud=2 eBridge=3 eHub=4 eRepeater=5 eAccessPoint=7
   ePc=8 eServer=9 ePrinter=10 eWirelessRouter=11 eIpPhone=12 eDslModem=13 eCableModem=14
@@ -127,7 +166,7 @@ def _p_live():
 
 RESOURCES = [
     {"uri": "pt://guide", "name": "能力与坑（必读）", "mimeType": "text/markdown",
-     "description": "这个 MCP 能做什么、做不到什么、五个必踩的坑、工作方式"},
+     "description": "这个 MCP 能做什么、做不到什么、必踩的坑、工作方式"},
     {"uri": "pt://api", "name": "IPC 调用速查", "mimeType": "text/markdown",
      "description": "拓扑/设备/端口/CLI/AAA 的实测可用调用与三组枚举值"},
     {"uri": "pt://live", "name": "实时快照", "mimeType": "text/markdown",
@@ -151,7 +190,7 @@ PROMPTS = [
 
 TOOLS = [
     {"name": "pt_guide",
-     "description": "返回本 MCP 的能力说明、工具速查、五个必踩的坑、以及它做不到只能人手点的两件事。"
+     "description": "返回本 MCP 的能力说明、工具速查、必踩的坑、以及它做不到只能人手点的几件事。"
                     "新会话第一件事就该调它（或在客户端里直接读资源 pt://guide）。",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "pt_health",
