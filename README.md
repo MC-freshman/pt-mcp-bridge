@@ -241,8 +241,11 @@ acs = dev.getProcess("AcsServerProcess")
 | 想做的 | 实测结论 |
 |---|---|
 | **保存工程文件** | 官方文档原话：**"The API lacks project load/save functions"**。`Options.saveFile(QString)` 实测只是"保存偏好设置到文件"，不是 `.pkt`。这条是 API 层没有接口，只能 Ctrl+S |
-| **取拓扑图** | `getWorkspaceImage(QString format)` → `vector<byte>`，**参数是格式串（如 `"PNG"`）不是文件路径**。拿到字节后怎么带出桥（resp 是文本通道）还没实现 |
-| **插硬件模块** | 签名是 `addModule(string slot, ModuleType type, string model)`（枚举 `ModuleType`：`eInterfaceCard=2`、`eNetworkModule=1`、`eLineCard=0`…）。槽位名**不能猜**（试了 16 种全 `false`），正路是先 `dev.getRootModule()` 再用 `getModuleCount/getModuleAt/getSlotPath` 枚举真槽名——这条还没实测 |
+| **插硬件模块** | 签名 `addModule(string slot, ModuleType type, string model)` 已确认，但槽位名要从 `dev.getRootModule()` 的 `getSlotPath()` 取；实测 1841 的模块树只暴露一个 `eNonRemovableModule`、槽路径为空，断电后 `addModule` 仍全部 `false` → **该型号的槽位没通过 IPC 暴露**，插模块只能 GUI |
+
+> **取拓扑图已打通**（不再算做不到）：`getWorkspaceImage("PNG")` 返回 `vector<byte>`——**参数是格式串不是路径**。
+> 拿到字节后在 JS 里 hex 编码，走已验证干净的 `writePlainTextToFile` 落盘，Python 侧 `unhexlify` 还原成 PNG。
+> 实测本机 AAA 拓扑导出 **1523×568 / 38267 字节**的合法 PNG（文件头 `89 50 4e 47`）。注意 `vector<byte>` 在 QtScript 里是**有符号数**，编码时要 `& 255`。
 
 > **早期这里的"创建连线/放设备/改坐标做不到"是错的**，已移到上面的"能做到"。原因是三个枚举的基值没查：`CONNECT_TYPES` 从 **8100** 起、`DeviceType` 是 **0–51**、`ModuleType` 是 **0–19**；按 0 起猜、或把枚举当字符串传，全部 `false` 且不报错——**"不抛错但返回 false"最容易误判成"API 不支持"**。
 
