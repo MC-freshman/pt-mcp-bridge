@@ -1,17 +1,13 @@
-"""pt-bridge MCP server v0.3 —— 加了 P0 的批量/快照/分型/进度通知。
+"""pt-bridge MCP server v0.5 —— 补 instructions / resources / prompts / pt_guide。
+
+设计意图：**新会话的模型不该靠试错才知道这个 MCP 能干什么**。
+  initialize.instructions  客户端通常会转成系统提示，是"开场就知道"的主通道
+  resources                pt://guide（能力与坑）、pt://api（调用速查）、pt://live（实时快照）
+  prompts                  三条现成工作流：建图 / 验收 / 排障
+  pt_guide 工具            兜底：客户端不转发 instructions 或 resources 时，直接调它拿全文
 
 传输：stdio，换行分隔 JSON-RPC 2.0，纯标准库。
 通路：工具调用 -> pt_bridge/cmd.txt -> PT 桥模块求值 -> resp.txt -> 本服务回包。
-
-P0 新增：
-  pt_wiring   只读还原连线表（不碰任何设备 CLI，实验途中可安全调用）
-  pt_script   一次调用喂一整段命令，内部逐条核对提示符层级，带 progress 通知
-  pt_health   桥与 PT 进程健康检查，三种失效分开报
-  错误分型    PRIVILEGE_DENIED / INVALID_ARGS / IPC_ERROR / TIMEOUT / NO_ECHO
-  progress    尊重 tools/call 的 _meta.progressToken，长任务推进度，避免 agent 侧超时
-
-注意：pt_script / pt_cli / pt_running_config 会往目标设备的 CLI 注字符。
-      你正在 PT 里手敲那台设备时别调，会互相打断。
 """
 import json
 import os
@@ -22,16 +18,145 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ptctl
 import ptplus
 
-SERVER_INFO = {"name": "pt-bridge", "version": "0.4.0"}
+SERVER_INFO = {"name": "pt-bridge", "version": "0.5.0"}
 PROTOCOL = "2024-11-05"
+CAPS = {"tools": {}, "resources": {}, "prompts": {}}
 
-DEVICES_JS = ("(function(){var n=ipc.network(),a=[];"
-              "for(var i=0;i<n.getDeviceCount();i++){var d=n.getDeviceAt(i);"
-              "a.push(d.getName()+':'+d.getClassName())}return a.join(', ')})()")
+# ---------------------------------------------------------------- instructions
+INSTRUCTIONS = """\
+你在操作一台真实的 Cisco Packet Tracer 8.0（不是模拟器、不是只读快照）。这个 MCP 桥能**读也能写**该软件内部状态。
+
+## 先决条件（每次都先确认）
+PT 必须处于运行状态、且桥模块已 Start。任何调用报 TIMEOUT 就先调 `pt_health`：
+  - pt_process="没开" → 让用户打开 Packet Tracer
+  - 有 PID 但 TIMEOUT → 让用户在 Extensions→Scripting→Configure Script Modules 里点 Start
+  - failure_class=PRIVILEGE_DENIED → 模块权限没落进 .pts，重走 Save→Export→Remove+Add
+
+## 工具速查
+读：  pt_devices(设备清单) · pt_wiring(连线表，只读安全) · pt_processes(协议进程)
+      pt_running_config(整份配置) · pt_aaa_state(AAA 用户/client 表) · pt_command_log(命令计数)
+写：  pt_cli(单条 IOS 命令) · pt_script(一整段命令，自动 enable/翻页，一次回汇总)
+万能：pt_eval(求值任意 ECMAScript，用于放设备/连线/改名/改位置/取图等 IPC 调用)
+
+## 五个最容易踩的坑（都实测过）
+1. 枚举必须传**数字**，传字符串一律返回 false 且不报错：
+   CONNECT_TYPES 从 **8100** 起（ETHERNET_STRAIGHT=8100, CROSS=8101, AUTO=8107）
+   DeviceType：eRouter=0 eSwitch=1 ePc=8 eServer=9 eDslModem=13
+2. `deleteLink(设备, 口)` **只给一端**；给四段会 Invalid arguments。
+3. `AssessmentModel.getRunningConfig` **会把 PT 弄崩**，绝不调用；读配置用 pt_running_config。
+4. 写本机文件只有 `writePlainTextToFile(path,text)` 两参是干净的，别试别的签名。
+5. 设备断电会**清空 running-config**（1841 实测），任何 setPower(false) 之前必须让用户先 Ctrl+S。
+
+## 它做不到（必须请用户手点，别绕圈子）
+- **保存 .pkt**：官方 API 没有读写工程的接口 → 提醒用户 Ctrl+S
+- **插硬件模块**：该型号槽位没通过 IPC 暴露 → 让用户在 Physical 页断电插模块再通电
+- 其余（放设备、连线、删线、改名、改位置、配 IP、IOS 配置、取拓扑图）都能编程完成
+
+## 工作方式
+用户说"配好/搭好/验一下"时：先用只读工具摸清现状（pt_devices + pt_wiring + pt_processes），
+再写（pt_script 批量发命令），最后用 `pt_running_config` / `pt_cli show ip route` / ping 自证。
+写入类工具会占用目标设备的 CLI，用户正在手敲那台时先问一句。
+"""
+
+# ---------------------------------------------------------------- resources
+def _p_api():
+    return """\
+# Packet Tracer IPC 调用速查（实测）
+
+## 拓扑
+lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()
+lw.addDevice(DeviceType, 型号串, x, y)      -> 新设备名
+lw.removeDevice(名)
+lw.createLink(设备A, 口A, 设备B, 口B, CONNECT_TYPES)
+lw.deleteLink(设备, 口)                     // 只给一端
+lw.getWorkspaceImage("PNG")                 -> vector<byte>（有符号，编码时 &255）
+lw.addNote(x, y, layer, text)               -> uuid ; lw.changeNoteText(uuid, text)
+
+## 设备 / 端口 / 模块
+d.setName(名) d.getName() d.getPower() d.setPower(bool)
+d.moveToLocation(x,y) d.moveToLocationCentered(x,y) d.getXCoordinate() d.getYCoordinate()
+d.getPortCount() d.getPortAt(i) d.getPort(口名) d.getPorts() d.getSupportedModule()
+d.getRootModule() -> Module: getModuleCount/getModuleAt/getSlotPath/getModuleType
+d.addModule(slot, ModuleType, model)        // 1841 槽位未暴露，实测 false
+p.setIpSubnetMask(ip,mask) p.setDefaultGateway(gw) p.setDnsServerIp(ip)
+p.setDhcpClientFlag(bool) p.getName() p.getLink() p.getIpAddress()
+
+## CLI / 服务
+d.getConsoleLine() -> tl.enterCommand(cmd) / tl.getOutput() / tl.getPrompt() / tl.getMode()
+d.enterCommand(cmd, true)                   // 设备级必须双参
+d.getProcess("AcsServerProcess") ->
+   isEnabled / getClientRecordsAsString / getUserRecordsAsString
+   enableACSServerService / addToClientMap / addToUserMap
+   deleteFromClientMap / deleteFromUserMap / removeAllUserRecords / removeAllClientRecords
+ipc.commandLog().getEntryCount()   ipc.simulation().isSimulationMode()
+ipc.systemFileManager() -> writePlainTextToFile(path,text) / getFileContents(path)
+
+## 枚举
+DeviceType: eRouter=0 eSwitch=1 eCloud=2 eBridge=3 eHub=4 eRepeater=5 eAccessPoint=7
+  ePc=8 eServer=9 ePrinter=10 eWirelessRouter=11 eIpPhone=12 eDslModem=13 eCableModem=14
+  eRemoteNetwork=15 eMultiLayerSwitch=16 eSwitch3650=17 eLaptop=18 eTabletPC=19 ePda=20
+  eTV=23 eASA=27 eIoE=28 eCellTower=31 eWirelessLanController=41 eLightWeightAccessPoint=44
+CONNECT_TYPES: ETHERNET_STRAIGHT=8100 ETHERNET_CROSS=8101 ETHERNET_ROLL=8102 FIBER=8103
+  PHONE=8104 CABLE=8105 SERIAL=8106 AUTO=8107 CONSOLE=8108 WIRELESS=8109 COAXIAL=8110
+ModuleType: eLineCard=0 eNetworkModule=1 eInterfaceCard=2 ePtRouterModule=3 eUSB=17
+
+## 已知崩溃项
+AssessmentModel.getRunningConfig —— 会让 PT 进程消失。用 CLI 读配置替代。
+"""
+
+
+def _p_live():
+    """实时快照：设备数 / 链路数 / 前三台设备端口 / AAA 摘要。"""
+    js = ("(function(){var n=ipc.network(),o={};"
+          "o.devices=n.getDeviceCount();o.links=n.getLinkCount();"
+          "var a=[];for(var i=0;i<n.getDeviceCount()&&i<6;i++){var d=n.getDeviceAt(i);"
+          "var pc=0;try{pc=d.getPortCount()}catch(e){}a.push(d.getName()+'('+d.getClassName()+','+pc+'口)')}"
+          "o.sample=a.join(', ');"
+          "try{var s=n.getDevice('Server0');if(s){var p=s.getProcess('AcsServerProcess');"
+          "if(p)o.aaa={enabled:String(p.isEnabled()),clients:String(p.getClientRecordsAsString())}}}catch(e){}"
+          "return JSON.stringify(o)})()")
+    r = ptctl.send(js, 25.0)
+    if not r.get("ok"):
+        return "# 实时快照取不到\n\n%s\n\n先调 `pt_health` 确认 PT 与桥模块状态。" % json.dumps(r, ensure_ascii=False)
+    try:
+        return "# 实时快照\n\n```json\n%s\n```\n" % json.dumps(json.loads(r["result"]),
+                                                              ensure_ascii=True, indent=2)
+    except Exception:
+        return "# 实时快照\n\n%s" % str(r.get("result"))[:1500]
+
+
+RESOURCES = [
+    {"uri": "pt://guide", "name": "能力与坑（必读）", "mimeType": "text/markdown",
+     "description": "这个 MCP 能做什么、做不到什么、五个必踩的坑、工作方式"},
+    {"uri": "pt://api", "name": "IPC 调用速查", "mimeType": "text/markdown",
+     "description": "拓扑/设备/端口/CLI/AAA 的实测可用调用与三组枚举值"},
+    {"uri": "pt://live", "name": "实时快照", "mimeType": "text/markdown",
+     "description": "当前 PT 的设备数、链路数、样例设备与 AAA 摘要（每次读取都重新采集）"},
+]
+
+PROMPTS = [
+    {"name": "pt-build-topology",
+     "description": "按描述在 PT 里放设备、连线、配 IP 与 IOS 配置，并自证结果",
+     "arguments": [{"name": "requirement", "description": "要搭的网络，例如 两台PC接一台交换机再连1841",
+                    "required": True}]},
+    {"name": "pt-verify-lab",
+     "description": "对现有拓扑做验收：读配置、看路由表、ping 关键地址、给逐项结论",
+     "arguments": [{"name": "focus", "description": "关注点，例如 AAA 拨号认证 / RIP 收敛",
+                    "required": False}]},
+    {"name": "pt-diagnose",
+     "description": "实验不通时的分诊：先 pt_health，再读配置与链路，给出根因假设与验证命令",
+     "arguments": [{"name": "symptom", "description": "现象，例如 拨号失败 / ping 不通",
+                    "required": True}]},
+]
 
 TOOLS = [
+    {"name": "pt_guide",
+     "description": "返回本 MCP 的能力说明、工具速查、五个必踩的坑、以及它做不到只能人手点的两件事。"
+                    "新会话第一件事就该调它（或在客户端里直接读资源 pt://guide）。",
+     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "pt_health",
-     "description": "查桥和 PT 是否活着：模块心跳、PT 进程、以及最近一次失效属于哪一类。先调这个。",
+     "description": "查桥和 PT 是否活着：模块心跳、PT 进程、以及最近一次失效属于哪一类"
+                    "（TIMEOUT+没进程=PT没开；TIMEOUT+有PID=模块没Start；PRIVILEGE_DENIED=权限没落盘）。",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "pt_status",
      "description": "看桥目录里各产物文件的字节数与内容片段（排查传输层用）。",
@@ -43,21 +168,34 @@ TOOLS = [
      "description": "只读还原整张连线表：每台交换机挂了哪些端点、哪条是半截线、哪些链路不经过交换机。"
                     "不发任何 CLI 命令，实验途中可安全调用。",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "pt_processes",
+     "description": "列某台设备装载了哪些协议进程（RoutingProcess、AcsServerProcess、"
+                    "RadiusClientProcess、DhcpServerMainProcess 等）。只调 getProcess，不触发行为。",
+     "inputSchema": {"type": "object", "properties": {"device": {"type": "string"}},
+                     "required": ["device"], "additionalProperties": False}},
+    {"name": "pt_aaa_state",
+     "description": "读某台 Server 上 AAA(ACS) 服务的真实内容：是否启用、client 表（名称/IP/密钥/类型）、"
+                    "user 表。以前误判成只能 GUI 手填的那块，实测可读。",
+     "inputSchema": {"type": "object", "properties": {"device": {"type": "string"}},
+                     "required": ["device"], "additionalProperties": False}},
+    {"name": "pt_command_log",
+     "description": "读 PT 记录的命令条数（含脚本注入的），用来核对注入是否落地。",
+     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "pt_cli",
      "description": "往指定设备 CLI 注一条命令，自动破 --More-- 分页，返回新增输出、结束时提示符和错误分型。"
-                    "会占用那台设备的 CLI，别在你手敲它的时候调。",
+                    "会占用那台设备的 CLI，别在你手敲它的时候调。模式切换（enable / configure terminal）也用它逐条发。",
      "inputSchema": {"type": "object",
                      "properties": {"device": {"type": "string"}, "command": {"type": "string"}},
                      "required": ["device", "command"], "additionalProperties": False}},
     {"name": "pt_script",
      "description": "一次调用把一整段 CLI 命令按顺序发完（内部逐条核对提示符层级、自动 enable、自动翻页），"
                     "只回一次汇总：总条数、被拒的哪几条、每条的最终提示符。"
-                    "会占用该设备的 CLI，别在你手敲它的时候调。",
+                    "配整台路由器/交换机的首选工具；会占用该设备 CLI。",
      "inputSchema": {"type": "object",
                      "properties": {
                          "device": {"type": "string", "description": "如 Router0"},
                          "lines": {"type": "array", "items": {"type": "string"},
-                                   "description": "按顺序的命令列表，不含首行 enable 也行，工具会自动补"},
+                                   "description": "按顺序的命令列表，不含首行 enable 也行"},
                          "stop_on_reject": {"type": "boolean",
                                             "description": "true 时遇到第一条被拒就停"}},
                      "required": ["device", "lines"], "additionalProperties": False}},
@@ -67,28 +205,17 @@ TOOLS = [
                      "required": ["device"], "additionalProperties": False}},
     {"name": "pt_eval",
      "description": "逃生舱：在 PT 脚本引擎里求值一段 ECMAScript（ES5，别用 let/箭头函数）。"
-                    "能用上面专用工具就别用它——现编 JS 容易踩实测表里那些坑。"
+                    "放设备/连线/删线/改名/改位置/取拓扑图都走它；具体调用与枚举值见资源 pt://api 或 pt_guide。"
                     "黑名单：AssessmentModel.getRunningConfig 会把 PT 崩掉。",
      "inputSchema": {"type": "object",
                      "properties": {"expression": {"type": "string"},
                                     "timeout_sec": {"type": "number"}},
                      "required": ["expression"], "additionalProperties": False}},
-    {"name": "pt_command_log",
-     "description": "读 PT 记录的命令条数（含脚本注入的），用来核对注入是否落地。",
-     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
-    {"name": "pt_aaa_state",
-     "description": "读某台 Server 上 AAA(ACS) 服务的真实内容：是否启用、client 表（名称/IP/密钥/类型）、"
-                    "user 表。以前误判成只能 GUI 手填的那块，实测可读。",
-     "inputSchema": {"type": "object",
-                     "properties": {"device": {"type": "string", "description": "如 Server0"}},
-                     "required": ["device"], "additionalProperties": False}},
-    {"name": "pt_processes",
-     "description": "列某台设备装载了哪些协议进程（RoutingProcess、AcsServerProcess、"
-                    "RadiusClientProcess、DhcpServerMainProcess 等）。只调 getProcess，不触发行为。",
-     "inputSchema": {"type": "object",
-                     "properties": {"device": {"type": "string"}},
-                     "required": ["device"], "additionalProperties": False}},
 ]
+
+DEVICES_JS = ("(function(){var n=ipc.network(),a=[];"
+              "for(var i=0;i<n.getDeviceCount();i++){var d=n.getDeviceAt(i);"
+              "a.push(d.getName()+':'+d.getClassName())}return a.join(', ')})()")
 
 
 def text_result(obj, is_error=False):
@@ -109,9 +236,10 @@ def pt_pid():
 
 
 def handle(name, args, notify):
+    if name == "pt_guide":
+        return text_result(INSTRUCTIONS)
+
     if name == "pt_health":
-        import time
-        alive = ptctl.read_raw(ptctl.ALIVE) if hasattr(ptctl, "ALIVE") else None
         p = pt_pid()
         probe = ptctl.send("1+1", 8.0)
         code = "OK" if probe.get("ok") else ptplus.classify(probe.get("error", ""),
@@ -160,7 +288,7 @@ def handle(name, args, notify):
             notify(i + 1, total, "%s: %s" % (dev, c))
             r = ptctl.cli_run(dev, c)
             steps.append({"cmd": c, "prompt": r.get("prompt"), "added": r.get("added"),
-                          "ok": r.get("ok")})
+                          "ok": r.get("ok"), "echoed": r.get("echoed")})
             if not r.get("ok"):
                 steps[-1]["failure_class"] = ptplus.classify(r.get("error", ""),
                                                              timed_out=not r.get("ok"))
@@ -185,17 +313,6 @@ def handle(name, args, notify):
             res["failure_class"] = ptplus.classify(res.get("error", ""))
         return text_result(res, not res.get("ok", False))
 
-    if name == "pt_eval":
-        r = ptctl.send(ptctl.js_expr(args["expression"]),
-                       float(args.get("timeout_sec", 15)))
-        if not r.get("ok"):
-            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=not r.get("ok"))
-        return text_result(r, not r.get("ok", False))
-
-    if name == "pt_command_log":
-        r = ptctl.send("String(ipc.commandLog().getEntryCount())", 15.0)
-        return text_result(r, not r.get("ok", False))
-
     if name == "pt_aaa_state":
         r = ptctl.send(ptplus.aaa_state_js(args["device"]), 20.0)
         if not r.get("ok"):
@@ -209,10 +326,9 @@ def handle(name, args, notify):
             d = json.loads(raw)
         except Exception:
             return text_result({"ok": False, "raw": str(raw)[:300]}, True)
+
         def split(v):
-            if isinstance(v, list):
-                return v
-            return [x for x in str(v).split(",") if x]
+            return v if isinstance(v, list) else [x for x in str(v).split(",") if x]
         return text_result({"ok": True, "device": args["device"], "enabled": d.get("enabled"),
                             "clients": split(d.get("clients")), "users": split(d.get("users"))})
 
@@ -227,7 +343,42 @@ def handle(name, args, notify):
         return text_result({"ok": True, "device": args["device"], "processes": got,
                             "count": len(got)})
 
+    if name == "pt_eval":
+        r = ptctl.send(ptctl.js_expr(args["expression"]),
+                       float(args.get("timeout_sec", 15)))
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=not r.get("ok"))
+        return text_result(r, not r.get("ok", False))
+
+    if name == "pt_command_log":
+        r = ptctl.send("String(ipc.commandLog().getEntryCount())", 15.0)
+        return text_result(r, not r.get("ok", False))
+
     return text_result("unknown tool: " + str(name), True)
+
+
+def prompt_get(name, args):
+    req = (args or {}).get("requirement") or (args or {}).get("symptom") or ""
+    focus = (args or {}).get("focus") or ""
+    if name == "pt-build-topology":
+        body = ("在已打开的 Packet Tracer 里搭建：%s\n\n"
+                "步骤：1) pt_health 确认桥可用；2) pt_devices + pt_wiring 看现状，别覆盖已有拓扑；"
+                "3) 放设备与连线走 pt_eval（调用与枚举见 pt://api：DeviceType 与 CONNECT_TYPES 必须传数字，"
+                "CONNECT_TYPES 从 8100 起）；4) IP 与 IOS 配置走 pt_script；"
+                "5) 用 pt_running_config / show ip route / ping 自证；6) 提醒用户 Ctrl+S 保存（API 存不了盘）。" % req)
+    elif name == "pt-verify-lab":
+        body = ("验收当前拓扑%s。逐项给结论，每条都要有读回来的证据：\n"
+                "1) pt_wiring 检查半截线与分段是否正确；2) pt_running_config 核关键配置；"
+                "3) show ip route 对照预期；4) ping 关键地址；5) 若涉及 AAA，pt_aaa_state 核 client/user 表。"
+                % ("（关注点：%s）" % focus if focus else ""))
+    elif name == "pt-diagnose":
+        body = ("现象：%s\n\n分诊顺序：pt_health（先分清是桥坏了还是网络坏了）→ pt_wiring（链路层面）"
+                "→ pt_running_config（配置层面）→ show ip route / ping（转发层面）"
+                "→ 若与认证相关，pt_aaa_state 比对两端密钥与 client 表。给出根因假设 + 一条能证伪的命令。" % req)
+    else:
+        body = "未知提示词：" + str(name)
+    return {"description": "pt-bridge 工作流", "messages": [
+        {"role": "user", "content": {"type": "text", "text": body}}]}
 
 
 def reply(obj):
@@ -260,8 +411,9 @@ def main():
         if method == "initialize":
             reply({"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": PROTOCOL,
-                "capabilities": {"tools": {}},
-                "serverInfo": SERVER_INFO}})
+                "capabilities": CAPS,
+                "serverInfo": SERVER_INFO,
+                "instructions": INSTRUCTIONS}})
         elif method == "ping":
             reply({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "tools/list":
@@ -272,6 +424,27 @@ def main():
             res = handle(params.get("name"), params.get("arguments") or {}, notify)
             token = None
             reply({"jsonrpc": "2.0", "id": mid, "result": res})
+        elif method == "resources/list":
+            reply({"jsonrpc": "2.0", "id": mid, "result": {"resources": RESOURCES}})
+        elif method == "resources/read":
+            uri = params.get("uri")
+            if uri == "pt://guide":
+                body = INSTRUCTIONS
+            elif uri == "pt://api":
+                body = _p_api()
+            elif uri == "pt://live":
+                body = _p_live()
+            else:
+                reply({"jsonrpc": "2.0", "id": mid,
+                       "error": {"code": -32602, "message": "unknown resource: %s" % uri}})
+                continue
+            reply({"jsonrpc": "2.0", "id": mid,
+                   "result": {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": body}]}})
+        elif method == "prompts/list":
+            reply({"jsonrpc": "2.0", "id": mid, "result": {"prompts": PROMPTS}})
+        elif method == "prompts/get":
+            reply({"jsonrpc": "2.0", "id": mid,
+                   "result": prompt_get(params.get("name"), params.get("arguments"))})
         elif mid is not None and method is not None:
             reply({"jsonrpc": "2.0", "id": mid,
                    "error": {"code": -32601, "message": "method not found: %s" % method}})

@@ -45,30 +45,59 @@ def decode(raw):
     return None, "三种编码都解不出"
 
 
-def send(code, timeout=12.0):
-    cid = str(int(time.time() * 1000))
-    payload = json.dumps({"id": cid, "token": TOKEN, "code": code})
-    tmp = CMD + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(payload)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, CMD)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        raw = read_raw(RESP)
-        if raw and raw.strip():
-            enc, txt = decode(raw)
-            try:
-                obj = json.loads(txt)
+def send(code, timeout=12.0, retries=2):
+    """投一条命令并等回包。
+
+    桥目录可能被多个客户端共用（实测发现过别的会话在用），会出现
+    "我投的命令被别人读走"或"resp.txt 里是别人的 id"。这里做三件事：
+      1. 写之前等队列空（最多 2 秒），别覆盖别人的在途命令
+      2. 超时后检查 resp.txt 的 id 是不是我的，不是就判为碰撞
+      3. 碰撞或队列被占时重试，最多 retries 次
+    """
+    collisions = 0
+    for attempt in range(retries + 1):
+        # 1) 等队列空
+        for _ in range(10):
+            raw_cmd = read_raw(CMD)
+            if not raw_cmd or not raw_cmd.strip() or raw_cmd.strip() == b'""':
+                break
+            time.sleep(0.2)
+        cid = "%d%s" % (int(time.time() * 1000), "" if attempt == 0 else "-r%d" % attempt)
+        payload = json.dumps({"id": cid, "token": TOKEN, "code": code})
+        # 关键：resp.txt 里通常躺着上一条回包，必须拿"发送前的快照"当基线，
+        # 只有内容变了才算有新回包；否则会把陈旧回包误判成碰撞而提前放弃。
+        snapshot = read_raw(RESP)
+        tmp = CMD + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CMD)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            raw = read_raw(RESP)
+            if raw and raw.strip() and raw != snapshot:
+                enc, txt = decode(raw)
+                try:
+                    obj = json.loads(txt)
+                except Exception:
+                    time.sleep(0.15)
+                    continue
                 if str(obj.get("id")) == cid:
+                    obj["attempts"] = attempt + 1
+                    if collisions:
+                        obj["collisions"] = collisions
                     return obj
-            except Exception:
-                pass
-        time.sleep(0.15)
+                # 新回包但不是我的 id —— 别的客户端在跑，记一次碰撞，继续等自己的
+                collisions += 1
+                snapshot = raw
+            time.sleep(0.15)
+        time.sleep(0.2)
     raw = read_raw(RESP)
-    hint = "resp.txt 不存在" if raw is None else ("resp.txt 内容非 JSON：%r" % raw[:60])
-    return {"id": cid, "ok": False, "error": "超时（%s）" % hint}
+    hint = "resp.txt 不存在" if raw is None else ("resp.txt 最新内容非本请求：%r" % raw[:60])
+    return {"id": "n/a", "ok": False,
+            "error": "超时（%s；碰撞 %d 次）" % (hint, collisions),
+            "collisions": collisions}
 
 
 def js_expr(expr):

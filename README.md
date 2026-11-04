@@ -122,6 +122,26 @@ python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI �
 
 | 工具 | 参数 | 作用 | 会动设备吗 |
 |---|---|---|---|
+### 让新会话的模型一上来就知道有这些能力
+
+光靠 tool description 不够——新会话的模型经常根本不知道自己有这个 MCP。所以 v0.5 在 MCP 的四个层面都铺了信息：
+
+| 层面 | 内容 | 作用 |
+|---|---|---|
+| `initialize.instructions` | 1442 字的操作简报：先决条件、工具速查、**五个必踩的坑**、做不到的两件事、工作方式 | 客户端通常把它转成系统提示，是"开场就知道"的主通道 |
+| `resources` | `pt://guide`（能力与坑）、`pt://api`（调用速查＋三组枚举）、`pt://live`（设备数/链路数/AAA 摘要，每次读取实时采集） | 可按需细读，不占常驻上下文 |
+| `prompts` | `pt-build-topology` / `pt-verify-lab` / `pt-diagnose` | 三条现成工作流，带参数渲染成完整指令 |
+| `tools` | 新增 `pt_guide`：直接把上面那份简报作为工具返回 | **兜底**——客户端不转发 instructions、也不支持 resources 时，模型调一次就有 |
+
+`instructions` 里的五个坑是挑出来的最高代价项：枚举传数字（`CONNECT_TYPES` 从 8100 起）、`deleteLink` 只给一端、`AssessmentModel.getRunningConfig` 崩 PT、只有 `writePlainTextToFile` 两参写文件干净、断电会清 running-config。
+
+自测：`python test_protocol.py`（不连 PT，检查 caps、instructions、12 工具、3 资源、3 提示词都在）。
+
+## MCP 工具（12 个）
+
+| 工具 | 参数 | 作用 | 会动设备吗 |
+|---|---|---|---|
+| `pt_guide` | — | **返回能力说明、工具速查、五个必踩的坑、做不到的两件事**。新会话第一件事就该调它 | 否（纯文本） |
 | `pt_health` | — | 桥与 PT 健康检查，三种失效分开报 | 只发一次 `1+1` |
 | `pt_status` | — | 桥目录各产物文件的字节数与内容片段 | 否 |
 | `pt_devices` | — | 设备清单 `名称:类型` | 只读 |
