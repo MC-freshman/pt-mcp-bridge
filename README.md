@@ -4,7 +4,7 @@
 
 难点不在 MCP，而在 **Packet Tracer 是完全封闭的目标**：没有命令行接口、没有 headless 模式、`.pkt` 工程文件全加密、随包 `.pts` 模块也全加密。本仓库给出**逆向出来的可用边界**，以及在这个边界内搭起来的一条稳定通路。
 
-实测环境：Packet Tracer **8.0.0.0212** Win64 · Python **3.9.13**（只用标准库）· Windows 11 · 当前版本 **v0.5，12 个工具**。
+实测环境：Packet Tracer **8.0.0.0212** Win64 · Python **3.9.13**（只用标准库）· Windows 11 · 当前版本 **v0.5.1，12 个工具**。
 
 ---
 
@@ -50,6 +50,10 @@ Python 侧走环境变量，不用改代码：
 |---|---|---|
 | `PT_BRIDGE_DIR` | `C:\pt_bridge` | 桥目录（`cmd.txt` / `resp.txt` / `log.txt` / `alive.txt` 所在处） |
 | `PT_BRIDGE_TOKEN` | `CHANGE_ME` | 与 PT 侧模块的口令配对 |
+
+**桥目录不用手工创建**：`ptctl.py` 在 import 时 `os.makedirs(BRIDGE, exist_ok=True)`，第一次调用会自动建好。
+（v0.5.1 之前不会——目录不存在时 `python ptctl.py ping` 直接抛 `FileNotFoundError: ...\cmd.txt.tmp`，
+退出码 1，报错里也不提"你缺个目录"，照 README 走的人第一条命令就会撞上。）
 
 JS 侧**必须手改三处**——PT 的 QtScript 引擎读不到环境变量，这是硬限制：
 
@@ -106,7 +110,7 @@ python test_offline.py     # 不连 PT：纯逻辑 + JSON-RPC 握手 + tools/lis
 python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI 全链
 ```
 
-### 注册不通的四种情况
+### 注册不通的几种情况
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
@@ -115,6 +119,8 @@ python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI �
 | `pt_health` 回 `TIMEOUT` 但 `pt_process` 有 PID | PT 重启过，模块没跟着 Start（`Startup` 是 `On Demand`） | `Configure Script Modules` 里点 Start |
 | `bad token` | JS 侧 `CFG.token` 和 `PT_BRIDGE_TOKEN` 不一致 | 两边改成同一个串 |
 | `PRIVILEGE_DENIED` | 权限没随 Save→Export→Remove+Add 落进 `.pts` | 重走第一节第 3、5、6、7 步 |
+| MCP 工具调用一律回 `Streamable HTTP error: ... Not Found`，但 PT 窗口还在、`Get-Process` 查得到 PID | **MCP server 自己掉了，PT 没事** | 别重启 PT。直接 `python ptctl.py js "<ES5 表达式>"` 走文件通道，能力与 `pt_eval` 等价（11-04 实测整场实验都是这么跑完的） |
+| `PermissionError: [WinError 5] ... cmd.txt.tmp -> cmd.txt` | 桥目录被并发读走（多个会话共用同一个 `PT_BRIDGE_DIR`） | 等 1–3 秒重试即可，不是逻辑错误 |
 
 ---
 

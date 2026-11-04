@@ -1,4 +1,4 @@
-"""pt-bridge MCP server v0.5 —— 补 instructions / resources / prompts / pt_guide。
+"""pt-bridge MCP server v0.5.1 —— 服务读写打通、四个假阴性读通道入档、桥目录自动创建。
 
 设计意图：**新会话的模型不该靠试错才知道这个 MCP 能干什么**。
   initialize.instructions  客户端通常会转成系统提示，是"开场就知道"的主通道
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ptctl
 import ptplus
 
-SERVER_INFO = {"name": "pt-bridge", "version": "0.5.0"}
+SERVER_INFO = {"name": "pt-bridge", "version": "0.5.1"}
 PROTOCOL = "2024-11-05"
 CAPS = {"tools": {}, "resources": {}, "prompts": {}}
 
@@ -402,18 +402,45 @@ def prompt_get(name, args):
     if name == "pt-build-topology":
         body = ("在已打开的 Packet Tracer 里搭建：%s\n\n"
                 "步骤：1) pt_health 确认桥可用；2) pt_devices + pt_wiring 看现状，别覆盖已有拓扑；"
-                "3) 放设备与连线走 pt_eval（调用与枚举见 pt://api：DeviceType 与 CONNECT_TYPES 必须传数字，"
-                "CONNECT_TYPES 从 8100 起）；4) IP 与 IOS 配置走 pt_script；"
-                "5) 用 pt_running_config / show ip route / ping 自证；6) 提醒用户 Ctrl+S 保存（API 存不了盘）。" % req)
+                "3) 型号串先向 NetworkComponentBox.getDeviceModels(\"Routers\"/\"Switches\"/\"End Devices\") 取，"
+                "别凭名字猜；addDevice 第一参是 DeviceType 枚举（eRouter=0 eSwitch=1 ePc=8 eServer=9），"
+                "**不是 getDeviceTypes() 的数组下标**；连线用 createLink(设备,口,设备,口,8100)，"
+                "CONNECT_TYPES 从 8100 起、必须传数字，传字符串一律 false 且不报错；"
+                "4) 新设备开机停在 initial configuration dialog，**等这句真出现在 prompt 里再答 no**，"
+                "发早了后面整段配置会被当回答吞掉且每条都显示成功；放 1841 会附带一台 "
+                "Power Distribution Device，删它不牵连路由器；"
+                "5) IP 走 port.setIpSubnetMask/setDefaultGateway，IOS 走 pt_script 一次喂完；"
+                "服务配置里 DHCP 作用域用 getPoolAt(0)（getPool(口名) 返回 null）+ 四个 setter + setEnable(true)；"
+                "6) 以下只能用户手点，别绕圈子试：DNS 加 A 记录、改 Web 页面正文、让 PC 真的发 DHCP 请求、"
+                "清 CLI 缓冲区、插硬件模块、保存 .pkt（提醒用户 Ctrl+S）；"
+                "7) 往某台设备注命令前先问一句用户是否正在手敲那台；"
+                "8) 用 pt_running_config / show ip route / ping 自证，并交一份逐设备命令台账，"
+                "把\"我注的 / 应用自己打的 / 用户手点的\"分开列。" % req)
     elif name == "pt-verify-lab":
         body = ("验收当前拓扑%s。逐项给结论，每条都要有读回来的证据：\n"
-                "1) pt_wiring 检查半截线与分段是否正确；2) pt_running_config 核关键配置；"
-                "3) show ip route 对照预期；4) ping 关键地址；5) 若涉及 AAA，pt_aaa_state 核 client/user 表。"
+                "1) pt_wiring 检查半截线与分段；2) pt_running_config 核关键配置；"
+                "3) show ip route 对照预期；4) ping 关键地址（首包常因 ARP 掉到 60%%~80%%，"
+                "重打一次再下结论）；5) 涉及 AAA 用 pt_aaa_state 核 client/user 表。\n"
+                "⚠️ 四个读数通道会造成假阴性，别拿它们断言\"没配上\"："
+                "HttpServer.getPage() 返回内置模板、不反映用户编辑过的页面；"
+                "DnsServerProcess.getIpAddOfDomain() 读缓存恒 0.0.0.0，记录要用 getRrFromNameServerDbAt(0) 读、"
+                "条数看 getSizeOfNameServerDb()；DhcpPool.getLeaseAt() 的簿记与客户端实际采纳的地址不对齐；"
+                "dev.getHostName() 是型号默认名不是 IOS hostname。"
+                "要下\"失败\"结论必须换一个独立通道——最好是应用自己的输出（面板、浏览器、PT 的 logs\\*.log）。"
                 % ("（关注点：%s）" % focus if focus else ""))
     elif name == "pt-diagnose":
-        body = ("现象：%s\n\n分诊顺序：pt_health（先分清是桥坏了还是网络坏了）→ pt_wiring（链路层面）"
-                "→ pt_running_config（配置层面）→ show ip route / ping（转发层面）"
-                "→ 若与认证相关，pt_aaa_state 比对两端密钥与 client 表。给出根因假设 + 一条能证伪的命令。" % req)
+        body = ("现象：%s\n\n先按通道分诊，再按网络分诊：\n"
+                "A) 工具报 Not Found 但 pt_health 有 PID → 是 MCP server 掉了、PT 还活着，"
+                "改走 python ptctl.py js \"<ES5>\" 文件通道，能力等价；"
+                "B) TIMEOUT 且 pt_process=\"没开\" → 让用户开 PT；有 PID 但 TIMEOUT → 让用户在 "
+                "Configure Script Modules 点 Start；PRIVILEGE_DENIED → 重走 Save→Export→Remove+Add；"
+                "C) ptctl 报 PermissionError cmd.txt.tmp → 桥目录被并发读走，等几秒重试，不是逻辑错；"
+                "D) 调用\"不抛错但返回 false/空串\" → 九成是枚举值或参数顺序不对，不是 API 不支持，"
+                "先查 pt://api 的三组枚举；"
+                "E) 通道正常后再走 pt_wiring（链路）→ pt_running_config（配置）→ show ip route / ping（转发）"
+                "→ 认证类用 pt_aaa_state 比对两端密钥与 client 表。\n"
+                "⚠️ 任何 setPower(false) 之前先让用户 Ctrl+S——断电会清空 running-config。"
+                "给出根因假设 + 一条能证伪的命令。" % req)
     else:
         body = "未知提示词：" + str(name)
     return {"description": "pt-bridge 工作流", "messages": [

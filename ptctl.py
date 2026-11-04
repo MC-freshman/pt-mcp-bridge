@@ -26,6 +26,10 @@ FILES = ["cmd.txt", "resp.txt", "alive.txt", "inbox.txt",
          "t_t2.txt", "t_t3.txt", "t_p2.txt", "t_p3.txt", "t_b.txt",
          "r_t2.txt", "r_t3.txt", "r_p2.txt", "r_p3.txt", "r_b.txt"]
 
+# 桥目录不存在时 send() 会在 open(tmp) 上抛裸 FileNotFoundError，
+# 新用户照 README 走到第一条 ping 就撞上，而且报错不会提示他缺目录。
+os.makedirs(BRIDGE, exist_ok=True)
+
 
 def read_raw(path):
     if not os.path.exists(path):
