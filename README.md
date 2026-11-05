@@ -4,7 +4,7 @@
 
 难点不在 MCP，而在 **Packet Tracer 是完全封闭的目标**：没有命令行接口、没有 headless 模式、`.pkt` 工程文件全加密、随包 `.pts` 模块也全加密。本仓库给出**逆向出来的可用边界**，以及在这个边界内搭起来的一条稳定通路。
 
-实测环境：Packet Tracer **8.0.0.0212** Win64 · Python **3.9.13**（只用标准库）· Windows 11 · 当前版本 **v0.5.1，12 个工具**。
+实测环境：Packet Tracer **8.0.0.0212** Win64 · Python **3.9.13**（只用标准库）· Windows 11 · 当前版本 **v0.6.0，19 个工具**。
 
 ---
 
@@ -87,7 +87,7 @@ JS 侧**必须手改三处**——PT 的 QtScript 引擎读不到环境变量，
 - `command` 建议写 **python 解释器的绝对路径**，不要写 `python`——MCP 子进程不一定继承你 shell 里的 PATH 顺序（本机 `where python` 有三个候选，写裸名会撞上 `WindowsApps` 那个假 python）。
 - `args` 里是 `pt_mcp.py` 的**绝对路径**。如果 `PT_BRIDGE_DIR` / `PT_BRIDGE_TOKEN` 不是默认值，需要在客户端的环境变量设置里一起给。
 
-**确认加载成功**：MCP 列表里该服务应显示 **11 个工具**（`pt_health`、`pt_status`、`pt_devices`、`pt_wiring`、`pt_cli`、`pt_script`、`pt_running_config`、`pt_eval`、`pt_command_log`、`pt_aaa_state`、`pt_processes`）。然后让 agent 调一次 `pt_health`，看到 `"failure_class": "OK"` 就算通了。
+**确认加载成功**：MCP 列表里该服务应显示 **19 个工具**（完整清单见下面第四节；`pt_guide` 排在最前）。然后让 agent 调一次 `pt_health`，看到 `"failure_class": "OK"` 就算通了。
 
 ### 其它 MCP 客户端（Claude Desktop / Cursor / 任何 stdio 客户端）
 
@@ -395,7 +395,7 @@ ipc.network().getDevice("PC0").getPort("FastEthernet0")
 ## 七、目录
 
 ```
-pt_mcp.py              MCP server（stdio JSON-RPC，纯标准库，11 个工具）
+pt_mcp.py              MCP server（stdio JSON-RPC，纯标准库，19 个工具）
 ptctl.py               命令行驱动 + 传输层（也被 server 复用）
 ptplus.py              纯逻辑：错误五分类、连线表解析、批量汇总、验收断言、AAA/进程 JS 构造器
 bridge/
