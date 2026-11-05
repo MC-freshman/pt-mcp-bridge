@@ -151,6 +151,99 @@ def processes_js(device, names=None):
             "try{p=d.getProcess(ps[i])}catch(e){}if(p)hit.push(ps[i])}"
             "return hit.join(',')})()"
             % (json.dumps(device), ",".join(json.dumps(x) for x in names)))
+
+
+# ---------- 搭图：放设备 / 连线 / 删 / 移动 ----------
+LW = "ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()"
+
+# 型号别名 -> DeviceType 枚举（0..51，传字符串会 false）
+DEVICE_TYPES = {
+    "router": 0, "eRouter": 0, "switch": 1, "eSwitch": 1, "cloud": 2, "hub": 4,
+    "accesspoint": 7, "ap": 7, "pc": 8, "server": 9, "printer": 10,
+    "wirelessrouter": 11, "ipphone": 12, "dslmodem": 13, "cablemodem": 14,
+    "multilayerswitch": 16, "l3switch": 16, "laptop": 18, "tablet": 19, "tv": 23,
+    "asa": 27, "ioe": 28, "celltower": 31, "wlc": 41, "lightweightap": 44,
+}
+# 线型别名 -> CONNECT_TYPES（**从 8100 起**）
+CONNECT_TYPES = {
+    "straight": 8100, "ethernet": 8100, "copper": 8100, "cross": 8101, "crossover": 8101,
+    "roll": 8102, "fiber": 8103, "phone": 8104, "cable": 8105, "serial": 8106,
+    "auto": 8107, "console": 8108, "wireless": 8109, "coaxial": 8110, "usb": 8113,
+}
+
+# 服务进程 -> 可安全调用的零参 getter（getAllEntries 在非空时会崩 PT，绝不放进来）
+SERVICE_GETTERS = {
+    "DnsServerProcess": ["isEnabled", "getPortNumber", "getSizeOfNameServerDb", "getEntryCount"],
+    "HttpServer": ["isEnabled", "isHttpsEnabled", "getPortNumber"],
+    "SyslogServer": ["isEnabled", "getPortNumber"],
+    "DhcpServerMainProcess": [],
+    "FtpServerProcess": [],
+    "EmailServer": [],
+    "AcsServerProcess": ["isEnabled"],
+    "NtpClientProcess": [],
+}
+
+
+def add_device_js(type_val, model, x, y):
+    return ("(function(){try{return %s.addDevice(%d,%s,%s,%s)}"
+            "catch(e){return 'ERR:'+e}})()"
+            % (LW, int(type_val), json.dumps(model), json.dumps(float(x)), json.dumps(float(y))))
+
+
+def add_link_js(a, pa, b, pb, conn_val):
+    return ("(function(){try{return %s.createLink(%s,%s,%s,%s,%d)}"
+            "catch(e){return 'ERR:'+e}})()"
+            % (LW, json.dumps(a), json.dumps(pa), json.dumps(b), json.dumps(pb), int(conn_val)))
+
+
+def del_link_js(device, port):
+    return "(function(){try{return %s.deleteLink(%s,%s)}catch(e){return 'ERR:'+e}})()" % (
+        LW, json.dumps(device), json.dumps(port))
+
+
+def del_device_js(device):
+    return "(function(){try{return %s.removeDevice(%s)}catch(e){return 'ERR:'+e}})()" % (
+        LW, json.dumps(device))
+
+
+def move_js(device, x, y):
+    return ("(function(){var d=ipc.network().getDevice(%s);if(!d)return 'NO_DEVICE';"
+            "try{return d.moveToLocation(%d,%d)}catch(e){return 'ERR:'+e}})()"
+            % (json.dumps(device), int(x), int(y)))
+
+
+def service_state_js(device):
+    """一次读该设备所有服务进程的状态；每个 getter 单独 try。"""
+    pairs = []
+    for proc, ms in SERVICE_GETTERS.items():
+        pairs.append("[%s,[%s]]" % (json.dumps(proc), ",".join(json.dumps(m) for m in ms)))
+    return ("(function(){var d=ipc.network().getDevice(%s);if(!d)return 'NO_DEVICE';"
+            "var spec=[%s],out={};"
+            "for(var i=0;i<spec.length;i++){var p=null;"
+            "try{p=d.getProcess(spec[i][0])}catch(e){}"
+            "if(!p)continue;var rec={};"
+            "for(var j=0;j<spec[i][1].length;j++){var m=spec[i][1][j];"
+            "try{var v=p[m]();if(typeof v!=='object')rec[m]=String(v)}catch(e){}}"
+            "out[spec[i][0]]=rec}"
+            "return JSON.stringify(out)})()"
+            % (json.dumps(device), ",".join(pairs)))
+
+
+def xml_js(device):
+    return ("(function(){var d=ipc.network().getDevice(%s);if(!d)return 'NO_DEVICE';"
+            "try{return String(d.serializeToXml())}catch(e){return 'ERR:'+e}})()"
+            % json.dumps(device))
+
+
+def sim_state_js():
+    return ("(function(){var s=ipc.simulation();return JSON.stringify({"
+            "simulationMode:String(s.isSimulationMode()),simTime:String(s.getCurrentSimTime()),"
+            "frames:String(s.getFrameInstanceCount()),index:String(s.getCurrentFrameInstanceIndex())})})()")
+
+
+def sim_set_js(on):
+    return ("(function(){var s=ipc.simulation();try{return String(s.setSimulationMode(%s))}"
+            "catch(e){return 'ERR:'+e}})()" % ("true" if on else "false"))
 def check_expect(config_text, must_contain, must_absent):
     have = [l.strip() for l in str(config_text or "").split("\n") if l.strip()]
     joined = "\n".join(have)

@@ -143,7 +143,7 @@ python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI �
 
 自测：`python test_protocol.py`（不连 PT，检查 caps、instructions、12 工具、3 资源、3 提示词都在）。
 
-### MCP 工具（12 个）
+### MCP 工具（19 个）
 
 | 工具 | 参数 | 作用 | 会动设备吗 |
 |---|---|---|---|
@@ -159,6 +159,13 @@ python test_mcp_live.py    # 连 PT：MCP -> 文件队列 -> PT -> 设备 CLI �
 | `pt_script` | `device`, `lines[]`, `stop_on_reject` | **一次调用喂一整段命令**，逐条核对提示符层级、自动补 `enable`、带 progress 通知 | **是** |
 | `pt_running_config` | `device` | 整份 running-config（内部先确保 enable） | **是** |
 | `pt_eval` | `expression`, `timeout_sec` | 逃生舱：求值任意 ECMAScript（ES5） | 看代码 |
+| `pt_add_device` | `type`, `model`, `x`, `y` | **放设备**。`type` 可传别名（router/switch/pc/server/laptop/ap/wlc/asa…）或 DeviceType 枚举 | 会改拓扑 |
+| `pt_add_link` | `a_device`,`a_port`,`b_device`,`b_port`,`kind` | **连线**。`kind` 别名 straight/cross/fiber/serial/auto/coaxial → 8100/8101/8103/8106/8107/8110 | 会改拓扑 |
+| `pt_delete` | `kind`(link\|device), `device`, `port` | 删线（只给一端）/ 删设备 | 会改拓扑 |
+| `pt_move` | `device`, `x`, `y` | 摆位置，按图排版 | 只改坐标 |
+| `pt_service_state` | `device` | **一次读全部服务**：DNS（库大小/记录数/端口）、HTTP（启用/HTTPS/端口）、Syslog、DHCP/FTP/Email 是否存在、AAA 是否启用 | 只读 |
+| `pt_xml` | `device`, `full` | 整机状态 XML（`serializeToXml`，实测 PC 12823 字符），默认截断 6000，适合改前/改后 diff | 只读 |
+| `pt_sim_state` | `set_mode`(可选) | 仿真模式/仿真时间/事件条数/当前索引；可切 simulation/realtime | 切换会冻结新设备启动 |
 
 ### 实测返回样例
 

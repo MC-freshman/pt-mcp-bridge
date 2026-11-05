@@ -34,9 +34,11 @@ PT 必须处于运行状态、且桥模块已 Start。任何调用报 TIMEOUT �
 
 ## 工具速查
 读：  pt_devices(设备清单) · pt_wiring(连线表，只读安全) · pt_processes(协议进程)
-      pt_running_config(整份配置) · pt_aaa_state(AAA 用户/client 表) · pt_command_log(命令计数)
+      pt_running_config(整份配置) · pt_aaa_state(AAA 用户/client) · pt_service_state(服务全景)
+      pt_xml(整机状态快照，可 diff) · pt_sim_state(仿真模式/时间/事件数) · pt_command_log
+建图：pt_add_device(放设备) · pt_add_link(连线) · pt_delete(删线/删设备) · pt_move(摆位置)
 写：  pt_cli(单条 IOS 命令) · pt_script(一整段命令，自动 enable/翻页，一次回汇总)
-万能：pt_eval(求值任意 ECMAScript，用于放设备/连线/改名/改位置/取图等 IPC 调用)
+万能：pt_eval(其余 IPC 调用)；枚举值工具内部已映射成数字，直接传别名即可
 
 ## 三条最常用的 IPC 一行式（细节调 pt://api 或 pt_guide）
 放设备+连线： lw.addDevice(0,"1841",x,y) → 返回名；lw.createLink(名,口,名,口,8100)
@@ -250,6 +252,64 @@ TOOLS = [
                      "properties": {"expression": {"type": "string"},
                                     "timeout_sec": {"type": "number"}},
                      "required": ["expression"], "additionalProperties": False}},
+
+    # ---------------- 搭图 ----------------
+    {"name": "pt_add_device",
+     "description": "在 PT 画布上放一台设备，返回自动分配的设备名。type 用别名或枚举数字："
+                    "router/switch/pc/server/laptop/ap/wlc/asa/dslmodem/cablemodem/hub/cloud 等；"
+                    "model 是型号串，如 PC-PT / 1841 / 2960-24TT / 2911 / Server-PT。"
+                    "注意：新设备在 Realtime 模式下才开始启动 IOS；Simulation 模式会冻住启动。",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "type": {"type": ["string", "integer"],
+                                  "description": "别名或 DeviceType 枚举（0..51）"},
+                         "model": {"type": "string", "description": "型号串，如 1841"},
+                         "x": {"type": "number"}, "y": {"type": "number"}},
+                     "required": ["type", "model", "x", "y"], "additionalProperties": False}},
+    {"name": "pt_add_link",
+     "description": "连一条线。kind 用别名或枚举：straight/ethernet(8100)、cross(8101)、"
+                    "fiber(8103)、phone(8104)、serial(8106)、auto(8107)、coaxial(8110)。"
+                    "返回 true 才算连上；路由口还要 no shutdown。",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "a_device": {"type": "string"}, "a_port": {"type": "string"},
+                         "b_device": {"type": "string"}, "b_port": {"type": "string"},
+                         "kind": {"type": ["string", "integer"]}},
+                     "required": ["a_device", "a_port", "b_device", "b_port"],
+                     "additionalProperties": False}},
+    {"name": "pt_delete",
+     "description": "删线或删设备。kind=link 时给 device+port（只给一端）；kind=device 时给 device。",
+     "inputSchema": {"type": "object",
+                     "properties": {"kind": {"type": "string", "enum": ["link", "device"]},
+                                    "device": {"type": "string"}, "port": {"type": "string"}},
+                     "required": ["kind", "device"], "additionalProperties": False}},
+    {"name": "pt_move",
+     "description": "把设备移到画布坐标 (x,y)，用于按图排版。改完可用 getXCoordinate 读回。",
+     "inputSchema": {"type": "object",
+                     "properties": {"device": {"type": "string"},
+                                    "x": {"type": "number"}, "y": {"type": "number"}},
+                     "required": ["device", "x", "y"], "additionalProperties": False}},
+
+    # ---------------- 状态数据 ----------------
+    {"name": "pt_service_state",
+     "description": "一次读该设备所有服务进程的状态：DNS（库大小/记录数/端口）、HTTP（启用/HTTPS/端口）、"
+                    "Syslog（启用/端口）、DHCP/FTP/Email 是否存在、AAA 是否启用。"
+                    "只调零参 getter，不碰会崩的 getAllEntries。",
+     "inputSchema": {"type": "object", "properties": {"device": {"type": "string"}},
+                     "required": ["device"], "additionalProperties": False}},
+    {"name": "pt_xml",
+     "description": "导出某台设备的完整状态 XML（serializeToXml）。默认截断到 6000 字符，"
+                    "要全文把 full 设 true。适合做改前/改后快照与 diff。",
+     "inputSchema": {"type": "object",
+                     "properties": {"device": {"type": "string"}, "full": {"type": "boolean"}},
+                     "required": ["device"], "additionalProperties": False}},
+    {"name": "pt_sim_state",
+     "description": "读仿真状态：是否 Simulation 模式、仿真时间、事件条数、当前索引。"
+                    "可选 set_mode=simulation/realtime 切换模式（切换会冻结/恢复新设备的 IOS 启动）。",
+     "inputSchema": {"type": "object",
+                     "properties": {"set_mode": {"type": "string",
+                                                 "enum": ["simulation", "realtime"]}},
+                     "additionalProperties": False}},
 ]
 
 DEVICES_JS = ("(function(){var n=ipc.network(),a=[];"
@@ -392,6 +452,124 @@ def handle(name, args, notify):
     if name == "pt_command_log":
         r = ptctl.send("String(ipc.commandLog().getEntryCount())", 15.0)
         return text_result(r, not r.get("ok", False))
+
+    # ---------------- 搭图 ----------------
+    if name == "pt_add_device":
+        t = args["type"]
+        if isinstance(t, str):
+            key = t.strip().lower()
+            if key.isdigit():
+                t = int(key)
+            elif key in ptplus.DEVICE_TYPES:
+                t = ptplus.DEVICE_TYPES[key]
+            else:
+                return text_result({"ok": False,
+                                    "error": "未知 type：%s。可用别名：%s"
+                                             % (t, ", ".join(sorted(ptplus.DEVICE_TYPES)))}, True)
+        r = ptctl.send(ptplus.add_device_js(t, args["model"], args["x"], args["y"]), 40.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        got = str(r.get("result", ""))
+        if got.startswith("ERR:") or got == "false":
+            return text_result({"ok": False, "error": got}, True)
+        return text_result({"ok": True, "device": got, "note": "新设备在 Realtime 模式下才启动 IOS"})
+
+    if name == "pt_add_link":
+        k = args.get("kind", "straight")
+        if isinstance(k, str):
+            key = k.strip().lower()
+            if key.isdigit():
+                k = int(key)
+            elif key in ptplus.CONNECT_TYPES:
+                k = ptplus.CONNECT_TYPES[key]
+            else:
+                return text_result({"ok": False,
+                                    "error": "未知 kind：%s。可用：%s"
+                                             % (k, ", ".join(sorted(ptplus.CONNECT_TYPES)))}, True)
+        r = ptctl.send(ptplus.add_link_js(args["a_device"], args["a_port"],
+                                          args["b_device"], args["b_port"], k), 40.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        ok = str(r.get("result")).strip() == "true"
+        return text_result({"ok": ok, "created": ok,
+                            "hint": "" if ok else "false 表示这口不能连这种线（检查端口名与 kind）"},
+                           not ok)
+
+    if name == "pt_delete":
+        kind = (args.get("kind") or "").lower()
+        if kind == "link":
+            if not args.get("port"):
+                return text_result({"ok": False, "error": "kind=link 时必须给 port"}, True)
+            r = ptctl.send(ptplus.del_link_js(args["device"], args["port"]), 30.0)
+        elif kind == "device":
+            r = ptctl.send(ptplus.del_device_js(args["device"]), 30.0)
+        else:
+            return text_result({"ok": False, "error": "kind 只能是 link 或 device"}, True)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        ok = str(r.get("result")).strip() == "true"
+        return text_result({"ok": ok, "deleted": ok}, not ok)
+
+    if name == "pt_move":
+        r = ptctl.send(ptplus.move_js(args["device"], args["x"], args["y"]), 30.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        got = str(r.get("result"))
+        if got == "NO_DEVICE":
+            return text_result({"ok": False, "error": "设备不存在"}, True)
+        return text_result({"ok": got.strip() == "true", "moved": got.strip() == "true"})
+
+    # ---------------- 状态数据 ----------------
+    if name == "pt_service_state":
+        r = ptctl.send(ptplus.service_state_js(args["device"]), 40.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        raw = r.get("result")
+        if raw == "NO_DEVICE":
+            return text_result({"ok": False, "error": "设备不存在"}, True)
+        try:
+            return text_result({"ok": True, "device": args["device"],
+                                "services": json.loads(raw)})
+        except Exception:
+            return text_result({"ok": False, "raw": str(raw)[:400]}, True)
+
+    if name == "pt_xml":
+        r = ptctl.send(ptplus.xml_js(args["device"]), 40.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        raw = str(r.get("result", ""))
+        if raw == "NO_DEVICE":
+            return text_result({"ok": False, "error": "设备不存在"}, True)
+        full = bool(args.get("full"))
+        out = raw if full else raw[:6000]
+        return text_result({"ok": True, "device": args["device"], "length": len(raw),
+                            "truncated": (not full) and len(raw) > 6000, "xml": out})
+
+    if name == "pt_sim_state":
+        mode = args.get("set_mode")
+        switched = None
+        if mode in ("simulation", "realtime"):
+            r0 = ptctl.send(ptplus.sim_set_js(mode == "simulation"), 20.0)
+            switched = r0.get("result", r0.get("error"))
+        r = ptctl.send(ptplus.sim_state_js(), 20.0)
+        if not r.get("ok"):
+            r["failure_class"] = ptplus.classify(r.get("error", ""), timed_out=True)
+            return text_result(r, True)
+        try:
+            d = json.loads(r["result"])
+        except Exception:
+            return text_result({"ok": False, "raw": str(r.get("result"))[:300]}, True)
+        d["ok"] = True
+        if switched is not None:
+            d["switched_to"] = mode
+            d["switch_result"] = switched
+        return text_result(d)
 
     return text_result("unknown tool: " + str(name), True)
 
